@@ -11,6 +11,14 @@ else()
     # .app build
     set(APPLE_CODESIGN_IDENTITY "" CACHE STRING "Codesign identity, e.g. 'Developer ID Application: Name (TEAMID)'")
 
+    # An ad-hoc identity ("-") has no team, so hardened runtime library validation would reject the
+    # bundled libraries. Ad-hoc builds therefore skip the hardened runtime and the secure timestamp.
+    if(APPLE_CODESIGN_IDENTITY STREQUAL "-")
+        set(APPLE_CODESIGN_OPTIONS "")
+    else()
+        set(APPLE_CODESIGN_OPTIONS "--timestamp --options=runtime")
+    endif()
+
     # Build an .app
     set(CMAKE_MACOSX_BUNDLE YES)
 
@@ -111,7 +119,7 @@ qt6_deploy_runtime_dependencies(
               foreach(item IN LISTS _sign_items)
                   execute_process(COMMAND /usr/bin/codesign --verbose=2
                       --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${item}\"
-                      --force --timestamp --options=runtime
+                      --force ${APPLE_CODESIGN_OPTIONS}
                       RESULT_VARIABLE rc2
                   )
                   if(NOT rc2 EQUAL 0)
@@ -124,7 +132,7 @@ qt6_deploy_runtime_dependencies(
           execute_process(COMMAND /usr/bin/codesign --verbose=2
               --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_app}\"
               --entitlements \"${APPLE_ENTITLEMENTS_FILE}\"
-              --force --timestamp --options=runtime
+              --force ${APPLE_CODESIGN_OPTIONS}
               RESULT_VARIABLE rc3
           )
           if(NOT rc3 EQUAL 0)

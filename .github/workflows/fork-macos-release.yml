@@ -1,0 +1,120 @@
+---
+# Builds an ad-hoc signed macOS DMG and publishes it as a GitHub release for this fork.
+# Push a tag such as `macos-vd-v2026.1011.1` to run it. The release is created with GITHUB_TOKEN,
+# so it does not trigger the upstream release workflows, which need LizardByte secrets.
+name: Fork macOS Release
+permissions: {}
+
+on:
+  push:
+    tags:
+      - 'macos-vd-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create, for example macos-vd-v2026.1011.1'
+        required: true
+        type: string
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: macOS-arm64
+    permissions:
+      contents: write  # needed to create the release
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install --force \
+            boost \
+            cmake \
+            ninja \
+            node \
+            pkgconf \
+            icu4c@78 \
+            miniupnpc \
+            openssl@3 \
+            opus \
+            qtbase \
+            qtsvg
+
+      - name: Configure
+        run: |
+          version="${RELEASE_TAG#macos-vd-}"
+          echo "BUILD_VERSION=${version}" >> "${GITHUB_ENV}"
+          export BRANCH="${GITHUB_REF_NAME}"
+          export BUILD_VERSION="${version}"
+
+          icu4c_root="$(brew --prefix icu4c@78)"
+          export CPPFLAGS="${CPPFLAGS:+${CPPFLAGS} }-I${icu4c_root}/include"
+          export LDFLAGS="${LDFLAGS:+${LDFLAGS} }-L${icu4c_root}/lib"
+          export LIBRARY_PATH="${icu4c_root}/lib${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+
+          cmake \
+            -B build \
+            -S . \
+            -G Ninja \
+            -DBUILD_DOCS=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DICU_ROOT="${icu4c_root}" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DOpus_ROOT_DIR="$(brew --prefix opus)" \
+            -DQt6_DIR="$(brew --prefix qtbase)/lib/cmake/Qt6" \
+            -DQt6Svg_DIR="$(brew --prefix qtsvg)/lib/cmake/Qt6Svg" \
+            -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
+            -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/${GITHUB_REPOSITORY}" \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/${GITHUB_REPOSITORY}/issues" \
+            -DAPPLE_CODESIGN_IDENTITY="-"
+
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+
+      - name: Package DMG
+        env:
+          # Ad-hoc signing; Apple Silicon does not run binaries without a signature.
+          SHOULD_SIGN: "true"
+        run: |
+          if ! cpack -G DragNDrop --config build/CPackConfig.cmake; then
+            echo "cpack failed, retrying once with verbose..."
+            cpack -G DragNDrop --config build/CPackConfig.cmake --verbose
+          fi
+          mkdir -p artifacts
+          cp build/cpack_artifacts/Sunshine.dmg "artifacts/Sunshine-${BUILD_VERSION}-macOS-arm64.dmg"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: Sunshine-macOS-arm64
+          path: artifacts/*.dmg
+          if-no-files-found: error
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > release-notes.md <<EOF
+          macOS build of Sunshine with the on-demand virtual display feature (branch \`${GITHUB_REF_NAME}\`, commit ${GITHUB_SHA}).
+
+          This build is ad-hoc signed, not notarized. After copying Sunshine.app to /Applications, allow it in
+          **System Settings > Privacy & Security > Open Anyway**, or run \`xattr -cr /Applications/Sunshine.app\`.
+          Then grant Screen & System Audio Recording and Accessibility permissions.
+          EOF
+          gh release create "${RELEASE_TAG}" artifacts/*.dmg \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Sunshine ${BUILD_VERSION} (macOS virtual display)" \
+            --notes-file release-notes.md \
+            --prerelease
