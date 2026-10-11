@@ -287,6 +287,9 @@ namespace virtual_display {
   /**
    * @brief Create a short-lived virtual display so encoders can be probed on a headless host.
    *
+   * Nothing is created when a physical display exists, because the probe then failed for another
+   * reason, such as a missing screen recording permission.
+   *
    * @return True when a probe display was created. Call `end_session()` after probing.
    */
   [[nodiscard]] bool create_probe_display();

@@ -482,6 +482,7 @@ int main(int argc, char *argv[]) {
   if (video::probe_encoders()) {
     // A host without a display, such as a headless Mac mini, cannot probe encoders.
     // Probe again on a short-lived virtual display so clients see the right codec support.
+    // Nothing is created when a physical display exists.
     if (virtual_display::create_probe_display()) {
       BOOST_LOG(info) << "Probing encoders again on a temporary virtual display"sv;
       const auto probe_failed {video::probe_encoders() != 0};

@@ -323,7 +323,8 @@ namespace virtual_display {
     auto &st {state()};
     std::scoped_lock lock {st.mutex};
     auto *backend {backend_locked(st)};
-    if (st.active || !available_locked(backend)) {
+    // A failed probe on a host with a display has another cause, such as missing permissions.
+    if (st.active || !available_locked(backend) || backend->has_physical_display()) {
       return false;
     }
 

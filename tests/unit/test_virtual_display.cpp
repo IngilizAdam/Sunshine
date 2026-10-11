@@ -326,6 +326,7 @@ TEST_F(VirtualDisplaySessionTest, EndSessionRemovesDisplay) {
 }
 
 TEST_F(VirtualDisplaySessionTest, CreatesProbeDisplay) {
+  backend->physical_display = false;
   EXPECT_TRUE(virtual_display::create_probe_display());
   EXPECT_EQ(log->last_mode, virtual_display::DEFAULT_MODE);
   EXPECT_FALSE(log->last_options.make_main);
@@ -338,7 +339,14 @@ TEST_F(VirtualDisplaySessionTest, CreatesProbeDisplay) {
   EXPECT_FALSE(virtual_display::is_active());
 }
 
+TEST_F(VirtualDisplaySessionTest, SkipsProbeDisplayWhenPhysicalDisplayExists) {
+  EXPECT_FALSE(virtual_display::create_probe_display());
+  EXPECT_EQ(log->create_calls, 0);
+  EXPECT_FALSE(virtual_display::is_active());
+}
+
 TEST_F(VirtualDisplaySessionTest, ProbeDisplayRequiresAvailableBackend) {
+  backend->physical_display = false;
   backend->available = false;
   EXPECT_FALSE(virtual_display::create_probe_display());
 
