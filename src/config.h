@@ -222,6 +222,10 @@ namespace config {
 
     int max_bitrate;  ///< Maximum bitrate ceiling in kbps for bitrate requested from the client.
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
+
+    bool headless_mode;  ///< Stream every session on a virtual display that matches the client.
+    bool virtual_display_hidpi;  ///< Create virtual displays as 2x HiDPI displays.
+    bool virtual_display_make_main;  ///< Make the virtual display the main display during the session.
   };
 
   /**

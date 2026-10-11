@@ -5,6 +5,11 @@
 // local includes
 #import "av_video.h"
 
+/**
+ * @brief Maximum number of restarts after capture session runtime errors.
+ */
+static const int MAX_SESSION_RESTARTS = 10;
+
 @implementation AVVideo
 
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
@@ -28,22 +33,57 @@
 
   CFRelease(mode);
 
-  AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
-  [screenInput setMinFrameDuration:self.minFrameDuration];
-
-  if ([self.session canAddInput:screenInput]) {
-    [self.session addInput:screenInput];
-  } else {
-    [screenInput release];
+  if (![self addScreenInput]) {
     return nil;
   }
+
+  // A display that was just added or reconfigured, such as a new virtual display, can make the
+  // session fail right after it starts. Without a restart, no frames would ever be delivered.
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(sessionRuntimeError:)
+                                               name:AVCaptureSessionRuntimeErrorNotification
+                                             object:self.session];
 
   [self.session startRunning];
 
   return self;
 }
 
+- (BOOL)addScreenInput {
+  AVCaptureScreenInput *screenInput = [[AVCaptureScreenInput alloc] initWithDisplayID:self.displayID];
+  [screenInput setMinFrameDuration:self.minFrameDuration];
+
+  BOOL added = [self.session canAddInput:screenInput];
+  if (added) {
+    [self.session addInput:screenInput];
+  }
+  [screenInput release];
+  return added;
+}
+
+- (void)sessionRuntimeError:(NSNotification *)notification {
+  if (self.restartCount >= MAX_SESSION_RESTARTS) {
+    NSLog(@"Screen capture of display %u failed: %@", self.displayID, notification.userInfo[AVCaptureSessionErrorKey]);
+    return;
+  }
+  self.restartCount = self.restartCount + 1;
+
+  // Recreate the screen input after a short delay, so the window server can finish adding the display.
+  // The block keeps this object alive until it has run.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    @synchronized(self) {
+      [self.session stopRunning];
+      for (AVCaptureInput *input in [[self.session.inputs copy] autorelease]) {
+        [self.session removeInput:input];
+      }
+      [self addScreenInput];
+      [self.session startRunning];
+    }
+  });
+}
+
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [self.videoOutputs release];
   [self.captureCallbacks release];
   [self.captureSignals release];
@@ -83,9 +123,13 @@
     AVCaptureConnection *videoConnection = [videoOutput connectionWithMediaType:AVMediaTypeVideo];
     dispatch_semaphore_t signal = dispatch_semaphore_create(0);
 
+    // The callback may be a stack block, so a heap copy is stored. It can outlive the caller,
+    // for example when the caller stops waiting for a frame after a timeout.
+    FrameCallbackBlock storedCallback = [frameCallback copy];
     [self.videoOutputs setObject:videoOutput forKey:videoConnection];
-    [self.captureCallbacks setObject:frameCallback forKey:videoConnection];
+    [self.captureCallbacks setObject:storedCallback forKey:videoConnection];
     [self.captureSignals setObject:signal forKey:videoConnection];
+    [storedCallback release];
 
     [self.session startRunning];
 

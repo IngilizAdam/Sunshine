@@ -798,7 +798,11 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
-    0  // minimum_fps_target (0 = framerate)
+    0,  // minimum_fps_target (0 = framerate)
+
+    false,  // headless_mode
+    false,  // virtual_display_hidpi
+    true  // virtual_display_make_main
   };
 
   /**
@@ -1737,6 +1741,9 @@ namespace config {
 
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
+    bool_f(vars, "headless_mode", video.headless_mode);
+    bool_f(vars, "virtual_display_hidpi", video.virtual_display_hidpi);
+    bool_f(vars, "virtual_display_make_main", video.virtual_display_make_main);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

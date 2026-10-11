@@ -72,6 +72,7 @@
                 <span v-if="app['prep-cmd'] && app['prep-cmd'].length" class="badge app-flag-badge">{{ $t('apps.badge_app_prep') }}</span>
                 <span v-if="app['exclude-global-prep-cmd']" class="badge app-flag-badge">{{ $t('apps.badge_no_global_prep') }}</span>
                 <span v-if="app['auto-detach']" class="badge app-flag-badge">{{ $t('apps.badge_auto_detach') }}</span>
+                <span v-if="platform === 'macos' && app['virtual-display']" class="badge app-flag-badge">{{ $t('apps.badge_virtual_display') }}</span>
               </div>
             </div>
           </div>
@@ -277,6 +278,15 @@
                       label="_common.run_as"
                       desc="apps.run_as_desc"
                       v-model="editForm.elevated"
+                      default="false"
+            ></Checkbox>
+            <!-- virtual display -->
+            <Checkbox v-if="platform === 'macos'"
+                      class="mb-3"
+                      id="appVirtualDisplay"
+                      label="apps.virtual_display"
+                      desc="apps.virtual_display_desc"
+                      v-model="editForm['virtual-display']"
                       default="false"
             ></Checkbox>
             <!-- auto-detach -->
@@ -806,6 +816,9 @@
           detached: [],
           "image-path": ""
         };
+        if (this.platform === 'macos') {
+          this.editForm["virtual-display"] = false;
+        }
         this.editFormError = "";
         this.openEditModal();
       },
@@ -829,6 +842,9 @@
         }
         if (this.editForm["exit-timeout"] === undefined) {
           this.editForm["exit-timeout"] = 5;
+        }
+        if (this.editForm["virtual-display"] === undefined && this.platform === 'macos') {
+          this.editForm["virtual-display"] = false;
         }
         this.editFormError = "";
         this.openEditModal();

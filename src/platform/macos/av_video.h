@@ -56,6 +56,10 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
  */
 @property (nonatomic, assign) NSMapTable<AVCaptureConnection *, AVCaptureVideoDataOutput *> *videoOutputs;
 /**
+ * @brief Number of times the capture session was restarted after a runtime error.
+ */
+@property (atomic, assign) int restartCount;
+/**
  * @brief Capture callbacks property.
  */
 @property (nonatomic, assign) NSMapTable<AVCaptureConnection *, FrameCallbackBlock> *captureCallbacks;
@@ -72,6 +76,20 @@ typedef bool (^FrameCallbackBlock)(CMSampleBufferRef);
  * @return Initialized AVVideo instance, or nil on failure.
  */
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate;
+
+/**
+ * @brief Add a screen input for the display to the capture session.
+ *
+ * @return YES when the input was added.
+ */
+- (BOOL)addScreenInput;
+
+/**
+ * @brief Restart the capture session after a runtime error.
+ *
+ * @param notification Runtime error notification of the capture session.
+ */
+- (void)sessionRuntimeError:(NSNotification *)notification;
 
 /**
  * @brief Set frame width frame height.

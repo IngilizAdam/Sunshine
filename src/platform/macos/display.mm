@@ -4,10 +4,13 @@
  */
 
 // standard includes
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -20,6 +23,8 @@
 #include "src/platform/macos/av_video.h"
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
+#include "src/platform/macos/sck_video.h"
+#include "src/virtual_display.h"
 
 // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
 /**
@@ -81,6 +86,19 @@ namespace platf {
   }  // namespace
 
   /**
+   * @brief Time to wait for a frame when probing a display.
+   */
+  constexpr std::int64_t DUMMY_IMG_TIMEOUT_NS {5LL * NSEC_PER_SEC};
+
+  /**
+   * @brief State shared between `dummy_img()` and its frame callback.
+   */
+  struct dummy_img_request_t {
+    std::mutex mutex;  ///< Serializes the callback with a timeout.
+    bool cancelled {false};  ///< Whether `dummy_img()` stopped waiting.
+  };
+
+  /**
    * @brief macOS display capture source and image buffers.
    */
   struct av_display_t: public display_t {
@@ -130,6 +148,10 @@ namespace platf {
 
         return true;
       }];
+
+      if (!signal) {
+        return capture_e::error;
+      }
 
       // FIXME: We should time out if an image isn't returned for a while
       dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
@@ -183,7 +205,16 @@ namespace platf {
         return 1;
       }
 
+      // The frame callback may still run after a timeout, so it only touches the image while the
+      // request is pending. The shared state outlives this function through the block.
+      auto request = std::make_shared<dummy_img_request_t>();
+
       auto signal = [av_capture capture:^(CMSampleBufferRef sampleBuffer) {
+        std::scoped_lock lock {request->mutex};
+        if (request->cancelled) {
+          return false;
+        }
+
         auto new_sample_buffer = std::make_shared<av_sample_buf_t>(sampleBuffer);
         auto new_pixel_buffer = std::make_shared<av_pixel_buf_t>(new_sample_buffer->buf);
 
@@ -210,7 +241,16 @@ namespace platf {
         return false;
       }];
 
-      dispatch_semaphore_wait(signal, DISPATCH_TIME_FOREVER);
+      if (!signal) {
+        return 1;
+      }
+
+      if (dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, DUMMY_IMG_TIMEOUT_NS)) != 0) {
+        std::scoped_lock lock {request->mutex};
+        request->cancelled = true;
+        BOOST_LOG(warning) << "No frame was captured from display ["sv << display_id << "] in time"sv;
+        return 1;
+      }
 
       return 0;
     }
@@ -302,7 +342,14 @@ namespace platf {
     BOOST_LOG(debug) << "Active desktop bounds: "sv << display->env_offset_x << 'x' << display->env_offset_y << ' '
                      << display->env_logical_width << 'x' << display->env_logical_height;
 
-    display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    // AVFoundation cannot capture a display added after its first use in this process, which is
+    // always true for a virtual display, so virtual displays are captured with ScreenCaptureKit.
+    if (virtual_display::active_display_name() == std::to_string(display->display_id)) {
+      BOOST_LOG(debug) << "Capturing virtual display ["sv << display->display_id << "] with ScreenCaptureKit"sv;
+      display->av_capture = [[SCKVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    } else {
+      display->av_capture = [[AVVideo alloc] initWithDisplay:display->display_id frameRate:config.framerate];
+    }
 
     if (!display->av_capture) {
       BOOST_LOG(error) << "Video setup failed."sv;
@@ -328,11 +375,16 @@ namespace platf {
     }
 
     const auto devices {display_device::enumerate_devices()};
-    display_names.reserve(devices.size());
+    display_names.reserve(devices.size() + 1);
     for (const auto &device : devices) {
       if (!device.m_display_name.empty()) {
         display_names.emplace_back(device.m_display_name);
       }
+    }
+
+    // Make sure the active virtual display can be selected even if enumeration has not caught up yet.
+    if (auto virtual_display_name {virtual_display::active_display_name()}; !virtual_display_name.empty() && std::ranges::find(display_names, virtual_display_name) == display_names.end()) {
+      display_names.emplace_back(std::move(virtual_display_name));
     }
 
     return display_names;

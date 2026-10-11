@@ -23,6 +23,8 @@
 
 // local includes
 #include "crypto.h"
+#include "rtsp.h"
+#include "virtual_display.h"
 
 /**
  * @brief Contains all the functions and variables related to the nvhttp (GameStream) server.
@@ -422,6 +424,15 @@ namespace nvhttp {
      * @brief Reload paired-client authorization state from the configured state file.
      */
     void reload_client_state();
+
+    /**
+     * @brief Prepare the virtual display for a session through the production launch helper.
+     *
+     * @param appid ID of the app the session launches or resumes.
+     * @param launch_session Session information with the requested mode and client details.
+     * @return Outcome of the preparation.
+     */
+    virtual_display::status_e prepare_virtual_display(int appid, const rtsp_stream::launch_session_t &launch_session);
   }  // namespace test_support
 #endif
 }  // namespace nvhttp

@@ -6,6 +6,7 @@ import AdapterNameSelector from './audiovideo/AdapterNameSelector.vue'
 import DisplayOutputSelector from './audiovideo/DisplayOutputSelector.vue'
 import DisplayDeviceOptions from "./audiovideo/DisplayDeviceOptions.vue";
 import DisplayModesSettings from "./audiovideo/DisplayModesSettings.vue";
+import VirtualDisplayOptions from "./audiovideo/VirtualDisplayOptions.vue";
 import Checkbox from "../../Checkbox.vue";
 
 const props = defineProps({
@@ -104,6 +105,12 @@ const config = ref(props.config)
 
     <!-- Display Modes -->
     <DisplayModesSettings
+        :platform="platform"
+        :config="config"
+    />
+
+    <!-- Virtual Display -->
+    <VirtualDisplayOptions
         :platform="platform"
         :config="config"
     />

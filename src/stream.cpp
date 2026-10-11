@@ -36,6 +36,7 @@ extern "C" {
 #include "system_tray.h"
 #include "thread_safe.h"
 #include "utility.h"
+#include "virtual_display.h"
 
 constexpr int IDX_START_A = 0;  ///< Control-stream message index for the first stream-start packet.
 constexpr int IDX_START_B = 1;  ///< Control-stream message index for the second stream-start packet.
@@ -2247,6 +2248,7 @@ namespace stream {
           // We have no app running and also no clients anymore.
           revert_display_config = true;
           input::terminate_gamepads();
+          virtual_display::end_session();
         }
 
         if (revert_display_config) {

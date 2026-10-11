@@ -27,6 +27,7 @@
 #include "audio.h"
 #include "platform/common.h"
 #include "rtsp.h"
+#include "virtual_display.h"
 
 // platform-specific includes
 #ifdef _WIN32
@@ -930,6 +931,11 @@ namespace display_device {
   }
 
   std::string map_output_name(const std::string &output_name) {
+    // A virtual display session always captures the virtual display, regardless of the configured output.
+    if (auto virtual_display_name {virtual_display::active_display_name()}; !virtual_display_name.empty()) {
+      return virtual_display_name;
+    }
+
     std::lock_guard lock {DD_DATA.mutex};
     if (!DD_DATA.sm_instance) {
       // Fallback to giving back the output name if the platform is not supported.

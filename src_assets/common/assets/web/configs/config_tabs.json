@@ -60,7 +60,10 @@
         "refresh_rate_only": []
       },
       "max_bitrate": 0,
-      "minimum_fps_target": 0
+      "minimum_fps_target": 0,
+      "headless_mode": "disabled",
+      "virtual_display_hidpi": "disabled",
+      "virtual_display_make_main": "enabled"
     }
   },
   {

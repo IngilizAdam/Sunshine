@@ -173,6 +173,8 @@ set(SUNSHINE_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/video.h"
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.cpp"
         "${CMAKE_SOURCE_DIR}/src/video_colorspace.h"
+        "${CMAKE_SOURCE_DIR}/src/virtual_display.cpp"
+        "${CMAKE_SOURCE_DIR}/src/virtual_display.h"
         "${CMAKE_SOURCE_DIR}/src/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/input.h"
         "${CMAKE_SOURCE_DIR}/src/audio.cpp"

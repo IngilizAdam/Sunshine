@@ -1544,6 +1544,92 @@ consent prompt for directory ACLs, so the Web UI shows setup steps for correctin
     </tr>
 </table>
 
+### headless_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Stream every session on a virtual display that matches the client's resolution and refresh rate,
+            including apps that do not have [Always use virtual display](app_examples.md#virtual-display) enabled. The display is
+            created when the app starts and removed when the app is terminated.
+            <br>
+            <br>
+            Sunshine also uses a virtual display automatically when no physical display is connected, so a Mac without
+            a monitor or dummy plug can still stream. Enabling this option is not required for that.
+            @note{This option is only supported on macOS. Other platforms retain their existing behavior.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            headless_mode = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### virtual_display_hidpi
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Create virtual displays as 2x HiDPI ("Retina") displays. The stream keeps the client's resolution, but
+            the desktop is laid out at half that size, so text and controls look the same size as on a Retina screen.
+            For example, a 2560x1600 client gets a 2560x1600 pixel display that looks like 1280x800.
+            <br>
+            <br>
+            macOS only offers HiDPI for displays of roughly 1680x1050 pixels or larger. Smaller modes are created as
+            1x displays with the same pixel size.
+            @note{This option is only supported on macOS.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_hidpi = enabled
+            @endcode</td>
+    </tr>
+</table>
+
+### virtual_display_make_main
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Make the virtual display the main display during the session, which moves the menu bar and Dock to it so
+            the streamed desktop can be used on its own. Physical displays stay enabled. The previous main display
+            and arrangement are restored when the virtual display is removed.
+            @note{This option is only supported on macOS.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_make_main = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ## Network
 
 ### upnp

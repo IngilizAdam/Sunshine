@@ -27,6 +27,12 @@ TEST(ConfigDefaultsTest, TreatsFp16SdrCapturesAsLinear) {
   EXPECT_FALSE(config::video.fp16_sdr_gamma_encoded);
 }
 
+TEST(ConfigDefaultsTest, UsesVirtualDisplayOnlyWhenRequested) {
+  EXPECT_FALSE(config::video.headless_mode);
+  EXPECT_FALSE(config::video.virtual_display_hidpi);
+  EXPECT_TRUE(config::video.virtual_display_make_main);
+}
+
 using NvencPresetNameParam = std::pair<int, std::string_view>;
 
 /**
@@ -165,6 +171,22 @@ TEST_F(ConfigPersistenceTest, ParsesFp16SdrGammaEncodedOption) {
 
   config::apply_config_for_test("fp16_sdr_gamma_encoded = disabled\n");
   EXPECT_FALSE(config::video.fp16_sdr_gamma_encoded);
+}
+
+TEST_F(ConfigPersistenceTest, ParsesVirtualDisplayOptions) {
+  const auto apps_file = config_file().parent_path() / "sunshine_test_config_apps.json";
+  ASSERT_EQ(file_handler::write_file(apps_file.string().c_str(), "{}"), 0);
+  config::stream.file_apps = apps_file.string();
+
+  config::apply_config_for_test("headless_mode = enabled\nvirtual_display_hidpi = enabled\nvirtual_display_make_main = disabled\n");
+  EXPECT_TRUE(config::video.headless_mode);
+  EXPECT_TRUE(config::video.virtual_display_hidpi);
+  EXPECT_FALSE(config::video.virtual_display_make_main);
+
+  config::apply_config_for_test("headless_mode = disabled\nvirtual_display_hidpi = disabled\nvirtual_display_make_main = enabled\n");
+  EXPECT_FALSE(config::video.headless_mode);
+  EXPECT_FALSE(config::video.virtual_display_hidpi);
+  EXPECT_TRUE(config::video.virtual_display_make_main);
 }
 
 TEST_F(ConfigPersistenceTest, ParsesNvencTwoPassModesAndDefaultsUnknownValues) {

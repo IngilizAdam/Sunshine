@@ -19,6 +19,37 @@ and applications to Sunshine.
 | Application Name | @code{}Desktop@endcode     |
 | Image            | @code{}desktop.png@endcode |
 
+### Virtual Display
+
+> [!NOTE]
+> Virtual displays are only supported on macOS.
+
+Sunshine adds a built-in **Virtual Display** entry next to your apps when virtual displays are available. Launching
+it creates a display that matches the resolution and refresh rate set in Moonlight, streams it, and removes it when
+the session is quit. The display is named after the client device, and each client always gets the same display
+identity, so macOS restores its arrangement the next time that client connects. The entry runs no commands, including
+the global prep commands, so it can also be used as a safe mode.
+
+Any other app can stream on a virtual display by enabling **Always use virtual display** in its settings, which is
+stored as the `virtual-display` field in `apps.json`.
+
+```json
+{
+  "name": "Desktop (virtual display)",
+  "image-path": "desktop.png",
+  "virtual-display": true
+}
+```
+
+Disconnecting without quitting keeps the virtual display, so the app can be resumed. When the client resumes with a
+different resolution or refresh rate, the display is changed to match. A second client that joins the session shares
+the same display. See [headless_mode](configuration.md#headless_mode),
+[virtual_display_hidpi](configuration.md#virtual_display_hidpi) and
+[virtual_display_make_main](configuration.md#virtual_display_make_main) for the related options.
+
+To turn the feature off, for example to rule it out while troubleshooting, set the `SUNSHINE_DISABLE_VIRTUAL_DISPLAY`
+environment variable to `1` before starting Sunshine.
+
 ### Steam Big Picture
 
 > [!NOTE]

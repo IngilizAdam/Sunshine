@@ -5,7 +5,9 @@
 #define BOOST_BIND_GLOBAL_PLACEHOLDERS
 
 // standard includes
+#include <algorithm>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +33,7 @@
 #include "process.h"
 #include "system_tray.h"
 #include "utility.h"
+#include "virtual_display.h"
 
 #ifdef _WIN32
   // from_utf8() string conversion function
@@ -377,6 +380,13 @@ namespace proc {
 
     bool has_run = _app_id > 0;
 
+    // The virtual display belongs to the app session, so it is removed with the app.
+    // It is kept when execute() clears a previous session, because the display for the
+    // new session is created before execute() runs.
+    if (has_run) {
+      virtual_display::end_session();
+    }
+
     // Only show the Stopped notification if we actually have an app to stop
     // Since terminate() is always run when a new app has started
     if (proc::proc.get_last_run_app_name().length() > 0 && has_run) {
@@ -697,6 +707,44 @@ namespace proc {
   }
 
   /**
+   * @brief Append the built-in Virtual Display app when virtual displays are available.
+   *
+   * The entry runs no commands and skips the global prep commands, so it doubles as a safe mode.
+   * It is not added when an app with the same name already exists.
+   *
+   * @param apps Parsed applications to extend.
+   * @param ids Application IDs already in use.
+   * @param index Index of the next application.
+   */
+  void add_virtual_display_app(std::vector<proc::ctx_t> &apps, std::set<std::string> &ids, int index) {
+    if (!virtual_display::is_available()) {
+      return;
+    }
+
+    const auto name_taken = std::any_of(apps.begin(), apps.end(), [](const auto &app) {
+      return app.name == virtual_display::APP_NAME;
+    });
+    if (name_taken) {
+      return;
+    }
+
+    proc::ctx_t ctx;
+    ctx.name = std::string {virtual_display::APP_NAME};
+    ctx.image_path = "desktop-alt.png";
+    ctx.elevated = false;
+    ctx.auto_detach = true;
+    ctx.wait_all = true;
+    ctx.virtual_display = true;
+    ctx.exit_timeout = 5s;
+
+    auto possible_ids = calculate_app_id(ctx.name, ctx.image_path, index);
+    ctx.id = ids.count(std::get<0>(possible_ids)) == 0 ? std::get<0>(possible_ids) : std::get<1>(possible_ids);
+    ids.insert(ctx.id);
+
+    apps.emplace_back(std::move(ctx));
+  }
+
+  /**
    * @brief Parse serialized text into the corresponding runtime representation.
    */
   std::optional<proc::proc_t> parse(const std::string &file_name) {
@@ -732,6 +780,7 @@ namespace proc {
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
         auto wait_all = app_node.get_optional<bool>("wait-all"s);
         auto exit_timeout = app_node.get_optional<int>("exit-timeout"s);
+        auto use_virtual_display = app_node.get_optional<bool>("virtual-display"s);
 
         std::vector<proc::cmd_t> prep_cmds;
         if (!exclude_global_prep.value_or(false)) {
@@ -800,6 +849,7 @@ namespace proc {
         ctx.elevated = elevated.value_or(false);
         ctx.auto_detach = auto_detach.value_or(true);
         ctx.wait_all = wait_all.value_or(true);
+        ctx.virtual_display = use_virtual_display.value_or(false);
         ctx.exit_timeout = std::chrono::seconds {exit_timeout.value_or(5)};
 
         auto possible_ids = calculate_app_id(name, ctx.image_path, i++);
@@ -818,6 +868,8 @@ namespace proc {
 
         apps.emplace_back(std::move(ctx));
       }
+
+      add_virtual_display_app(apps, ids, i);
 
       return proc::proc_t {
         std::move(this_env),

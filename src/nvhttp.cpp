@@ -38,6 +38,7 @@
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
+#include "virtual_display.h"
 
 using namespace std::literals;
 
@@ -1330,6 +1331,36 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Create, reconfigure or share the virtual display for a session that is starting or resuming.
+   *
+   * The display identity is derived from the paired client certificate because Moonlight sends the
+   * same `uniqueid` from every client.
+   *
+   * @param appid ID of the app the session launches or resumes.
+   * @param launch_session Session information with the requested mode and client details.
+   * @return Outcome of the preparation.
+   */
+  virtual_display::status_e prepare_virtual_display(int appid, const rtsp_stream::launch_session_t &launch_session) {
+    const auto app_id_str {std::to_string(appid)};
+    const auto &apps {proc::proc.get_apps()};
+    const auto app {std::ranges::find_if(apps, [&app_id_str](const auto &candidate) {
+      return candidate.id == app_id_str;
+    })};
+
+    return virtual_display::prepare_session({
+      .app_requests_virtual_display = app != apps.end() && app->virtual_display,
+      .headless_mode = config::video.headless_mode,
+      .options = {
+        .hidpi = config::video.virtual_display_hidpi,
+        .make_main = config::video.virtual_display_make_main,
+      },
+      .client_id = launch_session.client_cert.empty() ? launch_session.unique_id : launch_session.client_cert,
+      .client_name = launch_session.client_name,
+      .mode = {launch_session.width, launch_session.height, launch_session.fps},
+    });
+  }
+
+  /**
    * @brief Launch the requested application for a GameStream session.
    *
    * @param host_audio Host audio.
@@ -1354,6 +1385,7 @@ namespace nvhttp {
 
       if (revert_display_configuration) {
         display_device::revert_configuration();
+        virtual_display::end_session();
       }
     });
 
@@ -1389,10 +1421,22 @@ namespace nvhttp {
       // The display should be restored in case something fails as there are no other sessions.
       revert_display_configuration = true;
 
+      // The virtual display must exist before encoders are probed, because it may be the only display.
+      if (prepare_virtual_display((int) appid, *launch_session) == virtual_display::status_e::failed) {
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to create a virtual display and no physical display is connected.");
+        tree.put("root.gamesession", 0);
+
+        return;
+      }
+
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
-      // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      // change the active displays. A virtual display is already created in
+      // the requested mode, so it is not configured again.
+      if (!virtual_display::is_active()) {
+        display_device::configure_display(config::video, *launch_session);
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1501,10 +1545,23 @@ namespace nvhttp {
     const auto launch_session = make_launch_session(host_audio, args);
 
     if (no_active_sessions) {
+      // A resumed session may request a different mode, so the virtual display is
+      // reconfigured, or created if the app needs one and it does not exist yet.
+      // A client that joins an active session shares the existing display instead.
+      if (prepare_virtual_display(current_appid, *launch_session) == virtual_display::status_e::failed) {
+        tree.put("root.resume", 0);
+        tree.put("root.<xmlattr>.status_code", 503);
+        tree.put("root.<xmlattr>.status_message", "Failed to create a virtual display and no physical display is connected.");
+
+        return;
+      }
+
       // We want to prepare display only if there are no active sessions at
       // the moment. This should be done before probing encoders as it could
       // change the active displays.
-      display_device::configure_display(config::video, *launch_session);
+      if (!virtual_display::is_active()) {
+        display_device::configure_display(config::video, *launch_session);
+      }
 
       // Probe encoders again before streaming to ensure our chosen
       // encoder matches the active GPU (which could have changed
@@ -1574,6 +1631,7 @@ namespace nvhttp {
 
     // The config needs to be reverted regardless of whether "proc::proc.terminate()" was called or not.
     display_device::revert_configuration();
+    virtual_display::end_session();
   }
 
   /**
@@ -1881,6 +1939,10 @@ namespace nvhttp {
 
     void reload_client_state() {
       load_state();
+    }
+
+    virtual_display::status_e prepare_virtual_display(int appid, const rtsp_stream::launch_session_t &launch_session) {
+      return nvhttp::prepare_virtual_display(appid, launch_session);
     }
   }  // namespace test_support
 #endif

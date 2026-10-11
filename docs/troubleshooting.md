@@ -333,6 +333,20 @@ Try this.
 launchctl load -w /Library/LaunchAgents/org.freedesktop.dbus-session.plist
 ```
 
+### Virtual display does not appear
+Sunshine creates virtual displays with a macOS API that has no public documentation. Each virtual display is owned
+by a small helper process, which is Sunshine started with `--virtual-display-helper`. The display and any change to
+the main display are removed when the session is quit, or when Sunshine stops for any reason.
+
+- The **Virtual Display** app is only listed when the running macOS version provides the API.
+- Sunshine needs the same **Screen & System Audio Recording** permission as for physical displays. Virtual displays
+  are captured with ScreenCaptureKit.
+- macOS only offers HiDPI for displays of roughly 1680x1050 pixels or larger, so smaller modes are created as 1x
+  displays even when [virtual_display_hidpi](configuration.md#virtual_display_hidpi) is enabled.
+- Creating a display and probing it can take a few seconds, especially when a client resumes at a higher resolution.
+- To rule the feature out, set the `SUNSHINE_DISABLE_VIRTUAL_DISPLAY` environment variable to `1` before starting
+  Sunshine. Sunshine then streams physical displays as before.
+
 ## Windows
 
 ### No gamepad detected

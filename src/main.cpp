@@ -14,6 +14,7 @@
 // platform includes
 #ifdef __APPLE__
   #include "platform/macos/misc.h"
+  #include "platform/macos/virtual_display.h"
 
   #include <mach-o/dyld.h>
 #endif
@@ -45,6 +46,7 @@
 #include "system_tray.h"
 #include "upnp.h"
 #include "video.h"
+#include "virtual_display.h"
 
 using namespace std::literals;
 
@@ -157,9 +159,17 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event) 
 #endif
 
   if (!run_loop) {
+#ifdef __APPLE__
+    // Keep CoreGraphics informed about displays created by virtual display helpers.
+    BOOST_LOG(info) << "Processing display events on the main thread"sv;
+    virtual_display::run_display_event_loop([&shutdown_event]() {
+      return shutdown_event->peek();
+    });
+#else
     BOOST_LOG(info) << "No main thread features enabled, skipping event loop"sv;
     // Wait for shutdown
     shutdown_event->view();
+#endif
     return;
   }
 
@@ -179,6 +189,13 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event) 
  * @return Process or platform callback exit code.
  */
 int main(int argc, char *argv[]) {
+#ifdef __APPLE__
+  // Sunshine starts itself as a helper process that owns a virtual display.
+  if (argc > 1 && std::string_view {argv[1]} == virtual_display::HELPER_ARGUMENT) {
+    return virtual_display::run_helper();
+  }
+#endif
+
 #ifdef __linux__
   const bool privileged_execution = getauxval(AT_SECURE) != 0 || platf::has_elevated_privileges(true);
   if (privileged_execution && !platf::sanitize_process_environment()) {
@@ -463,7 +480,18 @@ int main(int argc, char *argv[]) {
   }
 
   if (video::probe_encoders()) {
-    BOOST_LOG(error) << "Video failed to find working encoder"sv;
+    // A host without a display, such as a headless Mac mini, cannot probe encoders.
+    // Probe again on a short-lived virtual display so clients see the right codec support.
+    if (virtual_display::create_probe_display()) {
+      BOOST_LOG(info) << "Probing encoders again on a temporary virtual display"sv;
+      const auto probe_failed {video::probe_encoders() != 0};
+      virtual_display::end_session();
+      if (probe_failed) {
+        BOOST_LOG(error) << "Video failed to find working encoder, even on a temporary virtual display"sv;
+      }
+    } else {
+      BOOST_LOG(error) << "Video failed to find working encoder"sv;
+    }
   }
 
   if (http::init()) {

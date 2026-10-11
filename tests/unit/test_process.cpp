@@ -4,6 +4,7 @@
  */
 // test includes
 #include "../tests_common.h"
+#include "../virtual_display_test_utils.h"
 
 // standard includes
 #include <filesystem>
@@ -14,7 +15,9 @@
 #include <boost/process/v1.hpp>
 
 // local includes
+#include <src/config.h>
 #include <src/process.h>
+#include <src/virtual_display.h>
 
 namespace fs = std::filesystem;
 
@@ -621,4 +624,134 @@ TEST_F(ProcessRefreshTest, FileTimeType_DefaultValueComparison) {
   // The actual correctness is verified by Refresh_ParsesFileOnFirstCall above —
   // if that test passes, the optional fix works regardless of platform behavior.
   SUCCEED();
+}
+
+/**
+ * @brief Test fixture that installs a fake virtual display backend.
+ */
+class ProcessVirtualDisplayTest: public ProcessRefreshTest {  // NOSONAR(cpp:S3656): protected members are intentional for test fixture subclassing
+protected:
+  void SetUp() override {
+    ProcessRefreshTest::SetUp();
+    log = std::make_shared<test_utils::virtual_display::backend_log_t>();
+    auto fake = std::make_unique<test_utils::virtual_display::fake_backend_t>(log);
+    backend = fake.get();
+    virtual_display::set_backend(std::move(fake));
+    saved_prep_cmds = config::sunshine.prep_cmds;
+  }
+
+  void TearDown() override {
+    config::sunshine.prep_cmds = saved_prep_cmds;
+    virtual_display::set_backend(nullptr);
+    ProcessRefreshTest::TearDown();
+  }
+
+  /**
+   * @brief Write an apps.json file with raw app entries.
+   *
+   * @param apps JSON array elements describing the apps.
+   * @return Path of the written file.
+   */
+  fs::path writeRawAppsJson(const std::string &apps) const {
+    const auto path = test_dir / "apps.json";
+    std::ofstream file(path);
+    file << R"({ "env": {}, "apps": [ )" << apps << " ] }\n";
+    return path;
+  }
+
+  std::shared_ptr<test_utils::virtual_display::backend_log_t> log;
+  test_utils::virtual_display::fake_backend_t *backend {};
+  std::vector<config::prep_cmd_t> saved_prep_cmds;
+};
+
+TEST_F(ProcessVirtualDisplayTest, ParsesAlwaysUseVirtualDisplayOption) {
+  backend->available = false;
+  const auto path = writeRawAppsJson(R"({ "name": "On", "virtual-display": true }, { "name": "Off", "virtual-display": false }, { "name": "Unset" })");
+
+  const auto parsed = proc::parse(path.string());
+
+  ASSERT_TRUE(parsed);
+  ASSERT_EQ(parsed->get_apps().size(), 3u);
+  EXPECT_TRUE(parsed->get_apps()[0].virtual_display);
+  EXPECT_FALSE(parsed->get_apps()[1].virtual_display);
+  EXPECT_FALSE(parsed->get_apps()[2].virtual_display);
+}
+
+TEST_F(ProcessVirtualDisplayTest, AddsSafeVirtualDisplayAppWhenAvailable) {
+  config::sunshine.prep_cmds = {config::prep_cmd_t {"echo do", "echo undo", false}};
+  const auto path = writeRawAppsJson(R"({ "name": "Desktop" })");
+
+  const auto parsed = proc::parse(path.string());
+
+  ASSERT_TRUE(parsed);
+  ASSERT_EQ(parsed->get_apps().size(), 2u);
+  EXPECT_EQ(parsed->get_apps()[0].prep_cmds.size(), 1u);
+
+  const auto &app = parsed->get_apps()[1];
+  EXPECT_EQ(app.name, virtual_display::APP_NAME);
+  EXPECT_TRUE(app.virtual_display);
+  EXPECT_TRUE(app.cmd.empty());
+  EXPECT_TRUE(app.prep_cmds.empty()) << "The Virtual Display entry doubles as a safe mode and runs no commands";
+  EXPECT_TRUE(app.detached.empty());
+  EXPECT_FALSE(app.id.empty());
+  EXPECT_NE(app.id, parsed->get_apps()[0].id);
+}
+
+TEST_F(ProcessVirtualDisplayTest, KeepsVirtualDisplayAppIdStable) {
+  const auto path = writeRawAppsJson(R"({ "name": "Desktop" })");
+
+  const auto first = proc::parse(path.string());
+  const auto second = proc::parse(path.string());
+
+  ASSERT_TRUE(first && second);
+  EXPECT_EQ(first->get_apps().back().id, second->get_apps().back().id);
+}
+
+TEST_F(ProcessVirtualDisplayTest, DoesNotAddVirtualDisplayAppWhenUnavailable) {
+  backend->available = false;
+  const auto path = writeRawAppsJson(R"({ "name": "Desktop" })");
+
+  const auto parsed = proc::parse(path.string());
+
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->get_apps().size(), 1u);
+}
+
+TEST_F(ProcessVirtualDisplayTest, DoesNotDuplicateUserDefinedVirtualDisplayApp) {
+  const auto path = writeRawAppsJson(R"({ "name": "Virtual Display", "cmd": "custom" })");
+
+  const auto parsed = proc::parse(path.string());
+
+  ASSERT_TRUE(parsed);
+  ASSERT_EQ(parsed->get_apps().size(), 1u);
+  EXPECT_EQ(parsed->get_apps()[0].cmd, "custom");
+}
+
+TEST_F(ProcessVirtualDisplayTest, TerminateRemovesVirtualDisplayCreatedBeforeExecute) {
+  auto saved = std::move(proc::proc);
+  std::vector<proc::ctx_t> apps;
+  proc::ctx_t ctx;
+  ctx.name = "Virtual Display";
+  ctx.id = "7";
+  ctx.virtual_display = true;
+  apps.push_back(std::move(ctx));
+  proc::proc = proc::proc_t(boost::this_process::environment(), std::move(apps));
+
+  // nvhttp creates the display before execute(), whose initial clean-up must keep it.
+  ASSERT_EQ(virtual_display::prepare_session({true, false, {false, true}, "client", "Tablet", {1920, 1080, 60}}), virtual_display::status_e::active);
+
+  auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
+  launch_session->width = 1920;
+  launch_session->height = 1080;
+  launch_session->fps = 60;
+  launch_session->surround_info = 2;
+  ASSERT_EQ(proc::proc.execute(7, launch_session), 0);
+  EXPECT_EQ(log->destroy_calls, 0);
+  EXPECT_TRUE(virtual_display::is_active());
+
+  proc::proc.terminate();
+  EXPECT_EQ(log->destroy_calls, 1);
+  EXPECT_FALSE(virtual_display::is_active());
+
+  proc::proc = std::move(saved);
 }
