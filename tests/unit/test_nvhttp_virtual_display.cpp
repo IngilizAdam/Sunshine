@@ -86,7 +86,7 @@ TEST_F(NvhttpVirtualDisplayTest, CreatesDisplayForAppWithVirtualDisplayOption) {
 TEST_F(NvhttpVirtualDisplayTest, DerivesIdentityFromPairedCertificate) {
   ASSERT_EQ(nvhttp::test_support::prepare_virtual_display(11, session), virtual_display::status_e::active);
 
-  const auto expected = virtual_display::derive_identity("client certificate", "Tablet");
+  const auto expected = virtual_display::identity_for_mode(virtual_display::derive_identity("client certificate", "Tablet"), log->last_mode, log->last_options);
   EXPECT_EQ(log->last_identity.product_id, expected.product_id);
   EXPECT_EQ(log->last_identity.serial_number, expected.serial_number);
 }
@@ -95,7 +95,9 @@ TEST_F(NvhttpVirtualDisplayTest, FallsBackToUniqueIdWithoutCertificate) {
   session.client_cert.clear();
   ASSERT_EQ(nvhttp::test_support::prepare_virtual_display(11, session), virtual_display::status_e::active);
 
-  EXPECT_EQ(log->last_identity.serial_number, virtual_display::derive_identity("0123456789ABCDEF", "Tablet").serial_number);
+  const auto expected = virtual_display::identity_for_mode(virtual_display::derive_identity("0123456789ABCDEF", "Tablet"), log->last_mode, log->last_options);
+  EXPECT_EQ(log->last_identity.product_id, expected.product_id);
+  EXPECT_EQ(log->last_identity.serial_number, expected.serial_number);
 }
 
 TEST_F(NvhttpVirtualDisplayTest, StreamsPhysicalDisplayForRegularApp) {

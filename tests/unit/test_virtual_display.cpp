@@ -131,6 +131,42 @@ TEST(VirtualDisplayIdentityTest, ProductAndSerialAreNeverZero) {
   }
 }
 
+TEST(VirtualDisplayIdentityTest, ModeIdentityKeepsClientNumbersAndName) {
+  const auto client {virtual_display::derive_identity("client-a", "Tablet")};
+  const auto identity {virtual_display::identity_for_mode(client, {2560, 1600, 120}, {.hidpi = false, .make_main = true})};
+
+  EXPECT_EQ(identity.vendor_id, client.vendor_id);
+  EXPECT_EQ(identity.product_id, client.product_id);
+  EXPECT_EQ(identity.name, client.name);
+  EXPECT_NE(identity.serial_number, 0U);
+}
+
+TEST(VirtualDisplayIdentityTest, ModeIdentityIsStableForTheSameMode) {
+  const auto client {virtual_display::derive_identity("client-a", "Tablet")};
+  constexpr virtual_display::options_t options {.hidpi = false, .make_main = true};
+
+  EXPECT_EQ(virtual_display::identity_for_mode(client, {2560, 1600, 120}, options).serial_number, virtual_display::identity_for_mode(client, {2560, 1600, 120}, options).serial_number);
+}
+
+TEST(VirtualDisplayIdentityTest, ModeIdentityDiffersPerModeAndOptions) {
+  const auto client {virtual_display::derive_identity("client-a", "Tablet")};
+  constexpr virtual_display::options_t options {.hidpi = false, .make_main = true};
+  const auto base {virtual_display::identity_for_mode(client, {3840, 2160, 100}, options).serial_number};
+
+  EXPECT_NE(virtual_display::identity_for_mode(client, {2560, 1440, 100}, options).serial_number, base);
+  EXPECT_NE(virtual_display::identity_for_mode(client, {3840, 2160, 60}, options).serial_number, base);
+  EXPECT_NE(virtual_display::identity_for_mode(client, {3840, 2160, 100}, {.hidpi = true, .make_main = true}).serial_number, base);
+  EXPECT_NE(virtual_display::identity_for_mode(client, {3840, 2160, 100}, {.hidpi = false, .make_main = false}).serial_number, base);
+  EXPECT_NE(virtual_display::identity_for_mode(virtual_display::derive_identity("client-b", "Tablet"), {3840, 2160, 100}, options).serial_number, base);
+}
+
+TEST(VirtualDisplayIdentityTest, ModeIdentitySerialIsNeverZero) {
+  const auto client {virtual_display::derive_identity("client-a", "Tablet")};
+  for (int width = 640; width < 2640; ++width) {
+    EXPECT_NE(virtual_display::identity_for_mode(client, {width, 1080, 60}, {.hidpi = false, .make_main = true}).serial_number, 0U);
+  }
+}
+
 TEST(VirtualDisplayModeTest, KeepsValidMode) {
   constexpr virtual_display::mode_t mode {2560, 1600, 120};
   EXPECT_EQ(virtual_display::sanitize_mode(mode), mode);
@@ -205,8 +241,11 @@ TEST_F(VirtualDisplaySessionTest, CreatesDisplayForAppRequest) {
   EXPECT_EQ(log->create_calls, 1);
   EXPECT_EQ(log->last_mode, (virtual_display::mode_t {2560, 1600, 120}));
   EXPECT_EQ(log->last_identity.name, "Tablet");
-  EXPECT_EQ(log->last_identity.serial_number, virtual_display::derive_identity("client-cert", "Tablet").serial_number);
+  const auto expected {virtual_display::identity_for_mode(virtual_display::derive_identity("client-cert", "Tablet"), {2560, 1600, 120}, log->last_options)};
+  EXPECT_EQ(log->last_identity.product_id, expected.product_id);
+  EXPECT_EQ(log->last_identity.serial_number, expected.serial_number);
   EXPECT_TRUE(log->last_options.make_main);
+  EXPECT_EQ(log->wake_calls, 1);
   EXPECT_TRUE(virtual_display::is_active());
   EXPECT_EQ(virtual_display::active_display_name(), "100");
 }
@@ -237,7 +276,7 @@ TEST_F(VirtualDisplaySessionTest, CreatesSmallHiDpiRequestAsStandardDisplay) {
 
   // The effective options are remembered, so resuming with the same request shares the display.
   EXPECT_EQ(virtual_display::prepare_session(small), virtual_display::status_e::active);
-  EXPECT_EQ(log->reconfigure_calls, 0);
+  EXPECT_EQ(log->create_calls, 1);
 }
 
 TEST_F(VirtualDisplaySessionTest, SharesDisplayWhenModeIsUnchanged) {
@@ -245,37 +284,66 @@ TEST_F(VirtualDisplaySessionTest, SharesDisplayWhenModeIsUnchanged) {
   EXPECT_EQ(virtual_display::prepare_session(request(false)), virtual_display::status_e::active);
 
   EXPECT_EQ(log->create_calls, 1);
-  EXPECT_EQ(log->reconfigure_calls, 0);
+  EXPECT_EQ(log->destroy_calls, 0);
 }
 
-TEST_F(VirtualDisplaySessionTest, ReconfiguresDisplayWhenModeChanges) {
+TEST_F(VirtualDisplaySessionTest, RecreatesDisplayWithNewIdentityWhenModeChanges) {
   ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
+  const auto first_serial {log->last_identity.serial_number};
   EXPECT_EQ(virtual_display::prepare_session(request(true, {1920, 1080, 60})), virtual_display::status_e::active);
 
-  EXPECT_EQ(log->create_calls, 1);
-  EXPECT_EQ(log->reconfigure_calls, 1);
+  EXPECT_EQ(log->destroy_calls, 1);
+  EXPECT_EQ(log->create_calls, 2);
   EXPECT_EQ(log->last_mode, (virtual_display::mode_t {1920, 1080, 60}));
+  EXPECT_NE(log->last_identity.serial_number, first_serial);
+  EXPECT_EQ(virtual_display::active_display_name(), "101");
 }
 
-TEST_F(VirtualDisplaySessionTest, ReconfiguresDisplayWhenOptionsChange) {
+TEST_F(VirtualDisplaySessionTest, RecreatesDisplayWhenOptionsChange) {
   ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
   auto hidpi {request(true)};
   hidpi.options.hidpi = true;
   EXPECT_EQ(virtual_display::prepare_session(hidpi), virtual_display::status_e::active);
 
-  EXPECT_EQ(log->reconfigure_calls, 1);
+  EXPECT_EQ(log->destroy_calls, 1);
+  EXPECT_EQ(log->create_calls, 2);
   EXPECT_TRUE(log->last_options.hidpi);
 }
 
-TEST_F(VirtualDisplaySessionTest, RecreatesDisplayWhenReconfigureFails) {
+TEST_F(VirtualDisplaySessionTest, FallsBackToPhysicalDisplayWhenRecreationFails) {
   ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
-  backend->reconfigure_succeeds = false;
+  backend->create_succeeds = false;
 
-  EXPECT_EQ(virtual_display::prepare_session(request(true, {3840, 2160, 60})), virtual_display::status_e::active);
-  EXPECT_EQ(log->reconfigure_calls, 1);
+  EXPECT_EQ(virtual_display::prepare_session(request(true, {3840, 2160, 60})), virtual_display::status_e::fallback_physical);
   EXPECT_EQ(log->destroy_calls, 1);
-  EXPECT_EQ(log->create_calls, 2);
-  EXPECT_EQ(virtual_display::active_display_name(), "101");
+  EXPECT_FALSE(virtual_display::is_active());
+}
+
+TEST_F(VirtualDisplaySessionTest, DoesNotWakeDisplaysWhenUnavailable) {
+  backend->available = false;
+  EXPECT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::fallback_physical);
+  EXPECT_EQ(log->wake_calls, 0);
+}
+
+TEST_F(VirtualDisplaySessionTest, FallsBackToPhysicalDisplayAfterCaptureFailure) {
+  ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
+
+  EXPECT_TRUE(virtual_display::fall_back_to_physical());
+  EXPECT_EQ(log->destroy_calls, 1);
+  EXPECT_FALSE(virtual_display::is_active());
+  EXPECT_TRUE(virtual_display::active_display_name().empty());
+
+  EXPECT_FALSE(virtual_display::fall_back_to_physical()) << "Nothing is removed when no display is active";
+  EXPECT_EQ(log->destroy_calls, 1);
+}
+
+TEST_F(VirtualDisplaySessionTest, KeepsVirtualDisplayAfterCaptureFailureWithoutPhysicalDisplay) {
+  backend->physical_display = false;
+  ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
+
+  EXPECT_FALSE(virtual_display::fall_back_to_physical());
+  EXPECT_EQ(log->destroy_calls, 0);
+  EXPECT_TRUE(virtual_display::is_active());
 }
 
 TEST_F(VirtualDisplaySessionTest, FallsBackToPhysicalDisplayWhenUnavailable) {
@@ -341,6 +409,7 @@ TEST_F(VirtualDisplaySessionTest, CreatesProbeDisplay) {
 
 TEST_F(VirtualDisplaySessionTest, SkipsProbeDisplayWhenPhysicalDisplayExists) {
   EXPECT_FALSE(virtual_display::create_probe_display());
+  EXPECT_EQ(log->wake_calls, 1) << "A sleeping physical display must be woken before it is counted";
   EXPECT_EQ(log->create_calls, 0);
   EXPECT_FALSE(virtual_display::is_active());
 }

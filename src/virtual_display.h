@@ -74,8 +74,10 @@ namespace virtual_display {
   /**
    * @brief Stable identity of a virtual display.
    *
-   * macOS remembers the arrangement and settings of a display by its vendor, product and
-   * serial numbers, so the same client must always receive the same values.
+   * macOS stores the mode, arrangement and mirroring of a display by its vendor, product and
+   * serial numbers, and restores them whenever a display with the same numbers appears. The
+   * product number identifies the client and the serial number also identifies the mode, so a
+   * display never inherits a stored state that was saved for a different mode.
    */
   struct identity_t {
     std::uint32_t vendor_id;  ///< EDID vendor identifier.
@@ -175,13 +177,12 @@ namespace virtual_display {
     [[nodiscard]] virtual std::optional<std::string> create(const identity_t &identity, const mode_t &mode, const options_t &options) = 0;
 
     /**
-     * @brief Change the mode of the existing virtual display.
+     * @brief Wake displays that sleep.
      *
-     * @param mode Mode to apply, already validated with `sanitize_mode()`.
-     * @param options Creation options.
-     * @return Capture selector of the display after the change, or an empty optional on failure.
+     * While the displays sleep, the system neither draws nor removes displays, and a sleeping
+     * physical display does not count as usable.
      */
-    [[nodiscard]] virtual std::optional<std::string> reconfigure(const mode_t &mode, const options_t &options) = 0;
+    virtual void wake() = 0;
 
     /**
      * @brief Remove the virtual display and restore the display arrangement.
@@ -222,6 +223,20 @@ namespace virtual_display {
   [[nodiscard]] identity_t derive_identity(std::string_view client_id, std::string_view client_name);
 
   /**
+   * @brief Derive the identity of a client's display in a specific mode.
+   *
+   * The serial number also depends on the mode and options, so the state macOS stores for the
+   * display always matches the mode it is created in. Reusing one identity for different modes
+   * made macOS restore stale modes or mirroring, and could crash the window server.
+   *
+   * @param client Identity of the client from `derive_identity()`.
+   * @param mode Mode the display is created in.
+   * @param options Options the display is created with.
+   * @return Identity with the client's vendor, product and name and a mode-specific serial number.
+   */
+  [[nodiscard]] identity_t identity_for_mode(const identity_t &client, const mode_t &mode, const options_t &options);
+
+  /**
    * @brief Validate a requested mode and fall back to the nearest valid mode.
    *
    * Zero or negative values use `DEFAULT_MODE`, refresh rates in millihertz are converted to hertz,
@@ -257,8 +272,8 @@ namespace virtual_display {
   /**
    * @brief Prepare the virtual display for a session that is starting or resuming.
    *
-   * Creates the display when the session needs one, reconfigures an existing display when the
-   * requested mode changed, and keeps an existing display unchanged otherwise.
+   * Creates the display when the session needs one, creates it again when the requested mode or
+   * options changed, and keeps an existing display unchanged otherwise.
    *
    * @param request Session request.
    * @return Outcome of the preparation.
@@ -269,6 +284,15 @@ namespace virtual_display {
    * @brief Remove the active virtual display, if any.
    */
   void end_session();
+
+  /**
+   * @brief Remove the active virtual display when it cannot be used and a physical display exists.
+   *
+   * Called when capture fails on the virtual display, so the session streams a physical display.
+   *
+   * @return True when the virtual display was removed and a physical display can be streamed.
+   */
+  [[nodiscard]] bool fall_back_to_physical();
 
   /**
    * @brief Report whether a virtual display is active.

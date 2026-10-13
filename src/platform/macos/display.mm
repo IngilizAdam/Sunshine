@@ -24,6 +24,7 @@
 #include "src/platform/macos/misc.h"
 #include "src/platform/macos/nv12_zero_device.h"
 #include "src/platform/macos/sck_video.h"
+#include "src/platform/macos/virtual_display.h"
 #include "src/virtual_display.h"
 
 // Avoid conflict between AVFoundation and libavutil both defining AVMediaType
@@ -288,6 +289,8 @@ namespace platf {
 
     auto display = std::make_shared<av_display_t>();
 
+    // A virtual display counts as active even while every display sleeps, so the displays are woken first.
+    static_cast<void>(virtual_display::wake_displays());
     BOOST_LOG(debug) << "Waking display for capture selector ["sv << display_name << ']';
     if (!display_device::wake_display(display_name, 1s)) {
       BOOST_LOG(debug) << "Display wake attempt did not expose the requested display ["sv << display_name << ']';

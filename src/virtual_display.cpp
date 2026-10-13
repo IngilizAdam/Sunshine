@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <mutex>
+#include <sstream>
 
 // local includes
 #include "logging.h"
@@ -163,6 +164,20 @@ namespace virtual_display {
     return identity;
   }
 
+  identity_t identity_for_mode(const identity_t &client, const mode_t &mode, const options_t &options) {
+    std::ostringstream key;
+    key << client.product_id << ':' << client.serial_number << ':' << mode.width << 'x' << mode.height << '@' << mode.refresh_rate
+        << ':' << options.hidpi << ':' << options.make_main;
+    const auto hash {fnv1a_64(key.str())};
+
+    identity_t identity {client};
+    identity.serial_number = static_cast<std::uint32_t>(hash >> 32U);
+    if (identity.serial_number == 0) {
+      identity.serial_number = static_cast<std::uint32_t>(hash & 0xFFFFFFFFU) | 1U;
+    }
+    return identity;
+  }
+
   mode_t sanitize_mode(const mode_t &requested, const limits_t &limits) {
     mode_t mode {requested};
 
@@ -217,6 +232,11 @@ namespace virtual_display {
     auto *backend {backend_locked(st)};
 
     const bool available {available_locked(backend)};
+    if (available) {
+      // A sleeping physical display does not count as usable, and a display created while the
+      // displays sleep cannot be captured.
+      backend->wake();
+    }
     const bool physical_display {backend == nullptr || backend->has_physical_display()};
     const auto decision {decide({request.app_requests_virtual_display, request.headless_mode, physical_display})};
 
@@ -250,16 +270,9 @@ namespace virtual_display {
         return status_e::active;
       }
 
-      BOOST_LOG(info) << "Reconfiguring virtual display ["sv << st.display_name << "] to "sv
+      // Each mode has its own identity, so a different mode needs a new display.
+      BOOST_LOG(info) << "Replacing virtual display ["sv << st.display_name << "] for mode "sv
                       << mode.width << 'x' << mode.height << '@' << mode.refresh_rate << (options.hidpi ? " (HiDPI)"sv : ""sv);
-      if (auto name {backend->reconfigure(mode, options)}) {
-        st.display_name = std::move(*name);
-        st.mode = mode;
-        st.options = options;
-        return status_e::active;
-      }
-
-      BOOST_LOG(warning) << "Unable to reconfigure the virtual display. Creating it again."sv;
       backend->destroy();
       st.active = false;
       st.display_name.clear();
@@ -267,7 +280,7 @@ namespace virtual_display {
       BOOST_LOG(info) << "Using a virtual display because "sv << to_string(decision);
     }
 
-    const auto identity {derive_identity(request.client_id, request.client_name)};
+    const auto identity {identity_for_mode(derive_identity(request.client_id, request.client_name), mode, options)};
     BOOST_LOG(info) << "Creating virtual display ["sv << identity.name << "] "sv
                     << mode.width << 'x' << mode.height << '@' << mode.refresh_rate << (options.hidpi ? " (HiDPI)"sv : ""sv);
 
@@ -307,6 +320,22 @@ namespace virtual_display {
     st.options = {};
   }
 
+  bool fall_back_to_physical() {
+    auto &st {state()};
+    std::scoped_lock lock {st.mutex};
+    if (!st.active || !st.backend || !st.backend->has_physical_display()) {
+      return false;
+    }
+
+    BOOST_LOG(warning) << "The virtual display ["sv << st.display_name << "] cannot be captured. Streaming a physical display instead."sv;
+    st.backend->destroy();
+    st.active = false;
+    st.display_name.clear();
+    st.mode = {};
+    st.options = {};
+    return true;
+  }
+
   bool is_active() {
     auto &st {state()};
     std::scoped_lock lock {st.mutex};
@@ -323,13 +352,19 @@ namespace virtual_display {
     auto &st {state()};
     std::scoped_lock lock {st.mutex};
     auto *backend {backend_locked(st)};
+    if (st.active || !available_locked(backend)) {
+      return false;
+    }
+
     // A failed probe on a host with a display has another cause, such as missing permissions.
-    if (st.active || !available_locked(backend) || backend->has_physical_display()) {
+    backend->wake();
+    if (backend->has_physical_display()) {
       return false;
     }
 
     constexpr options_t probe_options {false, false};
-    auto name {backend->create(derive_identity("sunshine-encoder-probe"sv, "Sunshine Probe"sv), DEFAULT_MODE, probe_options)};
+    const auto identity {identity_for_mode(derive_identity("sunshine-encoder-probe"sv, "Sunshine Probe"sv), DEFAULT_MODE, probe_options)};
+    auto name {backend->create(identity, DEFAULT_MODE, probe_options)};
     if (!name) {
       return false;
     }

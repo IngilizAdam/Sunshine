@@ -19,6 +19,7 @@
 
   // local includes
   #import <src/platform/macos/sck_video.h>
+  #import <src/platform/macos/virtual_display.h>
   #include <src/virtual_display.h>
 
 namespace {
@@ -128,23 +129,35 @@ TEST_F(MacVirtualDisplayTest, CreatesLargeModes) {
   EXPECT_EQ(pixel_height, 2160);
 }
 
-TEST_F(MacVirtualDisplayTest, ReconfiguresSmallerModeAndRefusesLargerMode) {
-  const auto identity = virtual_display::derive_identity("mac-virtual-display-test-reconfigure", "Sunshine Test");
-  const auto display = backend->create(identity, {2560, 1600, 120}, {.hidpi = false, .make_main = false});
-  ASSERT_TRUE(display);
+TEST_F(MacVirtualDisplayTest, TurnsOffMirroringRestoredByMacOS) {
+  const auto identity = virtual_display::derive_identity("mac-virtual-display-test-mirror", "Sunshine Test");
+  constexpr virtual_display::mode_t mode {1920, 1080, 60};
+  constexpr virtual_display::options_t options {.hidpi = false, .make_main = false};
+  const auto first = backend->create(identity, mode, options);
+  ASSERT_TRUE(first);
 
-  const auto smaller = backend->reconfigure({1920, 1200, 60}, {.hidpi = false, .make_main = false});
-  ASSERT_TRUE(smaller);
-  EXPECT_EQ(*smaller, *display);
+  // Store mirroring for this identity, as macOS does when the user mirrors the display.
+  CGDisplayConfigRef config {};
+  ASSERT_EQ(CGBeginDisplayConfiguration(&config), kCGErrorSuccess);
+  CGConfigureDisplayMirrorOfDisplay(config, static_cast<CGDirectDisplayID>(std::stoul(*first)), main_display);
+  ASSERT_EQ(CGCompleteDisplayConfiguration(config, kCGConfigurePermanently), kCGErrorSuccess);
+  backend->destroy();
+
+  const auto display = backend->create(identity, mode, options);
+  ASSERT_TRUE(display);
+  const auto display_id = static_cast<CGDirectDisplayID>(std::stoul(*display));
+  EXPECT_FALSE(CGDisplayIsInMirrorSet(display_id));
 
   int pixel_width {}, pixel_height {}, point_width {};
   double refresh_rate {};
-  read_mode(*smaller, pixel_width, pixel_height, point_width, refresh_rate);
+  read_mode(*display, pixel_width, pixel_height, point_width, refresh_rate);
   EXPECT_EQ(pixel_width, 1920);
-  EXPECT_EQ(pixel_height, 1200);
+  EXPECT_EQ(point_width, 1920);
   EXPECT_DOUBLE_EQ(refresh_rate, 60.0);
+}
 
-  EXPECT_FALSE(backend->reconfigure({3840, 2160, 60}, {.hidpi = false, .make_main = false}));
+TEST_F(MacVirtualDisplayTest, WakingAwakeDisplaysSucceeds) {
+  EXPECT_TRUE(virtual_display::wake_displays());
 }
 
 TEST_F(MacVirtualDisplayTest, CapturesVirtualDisplayWithScreenCaptureKit) {

@@ -38,4 +38,14 @@ namespace virtual_display {
    * @param stop_requested Returns true when the loop should end.
    */
   void run_display_event_loop(const std::function<bool()> &stop_requested);
+
+  /**
+   * @brief Wake the displays when one of them sleeps, and wait until they are awake.
+   *
+   * While the displays sleep, the window server neither draws nor removes displays, including
+   * virtual displays, and ScreenCaptureKit lists no displays at all.
+   *
+   * @return True when no online display sleeps afterwards.
+   */
+  bool wake_displays();
 }  // namespace virtual_display

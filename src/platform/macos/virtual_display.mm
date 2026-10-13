@@ -20,6 +20,7 @@
 #import <CoreGraphics/CoreGraphics.h>
 #include <fcntl.h>
 #import <Foundation/Foundation.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
 #include <mach-o/dyld.h>
 #include <poll.h>
 #include <pthread.h>
@@ -155,6 +156,7 @@ namespace virtual_display {
     constexpr auto EXIT_TIMEOUT {3s};  ///< Time allowed for the helper to exit before it is killed.
     constexpr auto POLL_INTERVAL {50ms};  ///< Interval between display state checks.
     constexpr auto SETTLE_DELAY {500ms};  ///< Time for the window server to finish adding, changing or removing a display.
+    constexpr auto WAKE_TIMEOUT {5s};  ///< Time allowed for sleeping displays to wake.
     constexpr double MAX_DIAGONAL_INCHES {24.0};  ///< macOS keeps very large panels offline, so the reported size is capped.
 
     /**
@@ -359,6 +361,45 @@ namespace virtual_display {
     }
 
     /**
+     * @brief Take a display out of a mirror set.
+     *
+     * macOS restores the mirroring it stored for a display identity. A mirrored virtual display
+     * shows another display's desktop and only offers that display's modes.
+     *
+     * @param display_id Display to take out of its mirror set.
+     * @return True when the display does not mirror another display afterwards.
+     */
+    bool leave_mirror_set(CGDirectDisplayID display_id) {
+      if (!CGDisplayIsInMirrorSet(display_id)) {
+        return true;
+      }
+
+      CGDisplayConfigRef config {};
+      if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
+        return false;
+      }
+      CGConfigureDisplayMirrorOfDisplay(config, display_id, kCGNullDirectDisplay);
+      if (CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly) != kCGErrorSuccess) {
+        return false;
+      }
+
+      return wait_for(MODE_TIMEOUT, [display_id]() {
+        return !CGDisplayIsInMirrorSet(display_id);
+      });
+    }
+
+    /**
+     * @brief Report whether an online display sleeps.
+     *
+     * @return True when at least one online display is asleep.
+     */
+    bool any_display_asleep() {
+      return std::ranges::any_of(online_displays(), [](const auto display) {
+        return CGDisplayIsAsleep(display) != 0;
+      });
+    }
+
+    /**
      * @brief Compute a physical size macOS accepts for a mode.
      *
      * macOS keeps displays with very large reported panels offline, so the diagonal is capped.
@@ -441,22 +482,6 @@ namespace virtual_display {
           return kCGNullDirectDisplay;
         }
 
-        max_width = mode.width;
-        max_height = mode.height;
-        return apply_mode(mode, options) ? display.displayID : kCGNullDirectDisplay;
-      }
-
-      /**
-       * @brief Change the mode of the display.
-       *
-       * @param mode Mode in pixels; it must fit within the size the display was created with.
-       * @param options Creation options.
-       * @return Display identifier, or `kCGNullDirectDisplay` on failure.
-       */
-      CGDirectDisplayID reconfigure(const mode_t &mode, const options_t &options) {
-        if (!display || mode.width > max_width || mode.height > max_height) {
-          return kCGNullDirectDisplay;
-        }
         return apply_mode(mode, options) ? display.displayID : kCGNullDirectDisplay;
       }
 
@@ -575,6 +600,14 @@ namespace virtual_display {
           return false;
         }
 
+        if (CGDisplayIsInMirrorSet(id)) {
+          report("warning"sv, "macOS restored the virtual display as a mirror. Turning mirroring off.");
+          if (!leave_mirror_set(id)) {
+            report("error"sv, "Unable to turn mirroring off for the virtual display");
+            return false;
+          }
+        }
+
         if (!select_mode(mode, hidpi) && hidpi && fall_back_to_1x()) {
           select_mode(mode, false);
         }
@@ -595,8 +628,6 @@ namespace virtual_display {
 
       report_t report;  ///< Callback for messages that Sunshine should log.
       CGVirtualDisplay *display {nil};  ///< The display; it exists while this object is alive.
-      int max_width {};  ///< Framebuffer width limit of the display.
-      int max_height {};  ///< Framebuffer height limit of the display.
     };
 
     /**
@@ -661,8 +692,13 @@ namespace virtual_display {
         return false;
       }
 
+      void wake() override {
+        static_cast<void>(wake_displays());
+      }
+
       [[nodiscard]] std::optional<std::string> create(const identity_t &identity, const mode_t &mode, const options_t &options) override {
         destroy();
+        static_cast<void>(wake_displays());
         if (!spawn_helper()) {
           return std::nullopt;
         }
@@ -678,24 +714,13 @@ namespace virtual_display {
         return std::to_string(display_id);
       }
 
-      [[nodiscard]] std::optional<std::string> reconfigure(const mode_t &mode, const options_t &options) override {
-        if (helper_pid <= 0) {
-          return std::nullopt;
-        }
-
-        std::ostringstream command;
-        command << "mode " << mode.width << ' ' << mode.height << ' ' << mode.refresh_rate << ' ' << options.hidpi << ' ' << options.make_main;
-        if (!send_command(command.str()) || !wait_until_usable()) {
-          return std::nullopt;
-        }
-        return std::to_string(display_id);
-      }
-
       void destroy() override {
         if (helper_pid <= 0) {
           return;
         }
 
+        // The window server only removes the display and reverts the arrangement while the displays are awake.
+        static_cast<void>(wake_displays());
         write_line(to_helper, "quit");
         close_pipes();
         wait_for_helper_exit();
@@ -945,6 +970,29 @@ namespace virtual_display {
     };
   }  // namespace
 
+  bool wake_displays() {
+    if (!any_display_asleep()) {
+      return true;
+    }
+
+    // Local user activity turns the displays on; the assertion is released once they are awake.
+    IOPMAssertionID assertion {kIOPMNullAssertionID};
+    if (IOPMAssertionDeclareUserActivity(CFSTR("Sunshine virtual display"), kIOPMUserActiveLocal, &assertion) != kIOReturnSuccess) {
+      BOOST_LOG(warning) << "Unable to wake the sleeping displays"sv;
+      return false;
+    }
+
+    BOOST_LOG(info) << "Waking the sleeping displays"sv;
+    const bool awake {wait_for(WAKE_TIMEOUT, []() {
+      return !any_display_asleep();
+    })};
+    IOPMAssertionRelease(assertion);
+    if (!awake) {
+      BOOST_LOG(warning) << "The displays did not wake in time"sv;
+    }
+    return awake;
+  }
+
   std::unique_ptr<backend_t> make_platform_backend() {
     return std::make_unique<macos_backend_t>();
   }
@@ -980,12 +1028,6 @@ namespace virtual_display {
         if (command >> identity.vendor_id >> identity.product_id >> identity.serial_number >> mode.width >> mode.height >> mode.refresh_rate >> options.hidpi >> options.make_main) {
           std::getline(command >> std::ws, identity.name);
           id = owner.create(identity, mode, options);
-        }
-      } else if (name == "mode") {
-        mode_t mode {};
-        options_t options {};
-        if (command >> mode.width >> mode.height >> mode.refresh_rate >> options.hidpi >> options.make_main) {
-          id = owner.reconfigure(mode, options);
         }
       } else if (name == "quit") {
         break;

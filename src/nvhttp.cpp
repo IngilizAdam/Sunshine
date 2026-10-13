@@ -1331,7 +1331,7 @@ namespace nvhttp {
   }
 
   /**
-   * @brief Create, reconfigure or share the virtual display for a session that is starting or resuming.
+   * @brief Create, replace or share the virtual display for a session that is starting or resuming.
    *
    * The display identity is derived from the paired client certificate because Moonlight sends the
    * same `uniqueid` from every client.
@@ -1358,6 +1358,25 @@ namespace nvhttp {
       .client_name = launch_session.client_name,
       .mode = {launch_session.width, launch_session.height, launch_session.fps},
     });
+  }
+
+  /**
+   * @brief Probe encoders for a session, falling back to a physical display when the virtual one fails.
+   *
+   * @param launch_session Session information used to configure the physical display.
+   * @return Zero on success, non-zero when no display and encoder can be used.
+   */
+  int probe_encoders_for_session(const rtsp_stream::launch_session_t &launch_session) {
+    if (video::probe_encoders() == 0) {
+      return 0;
+    }
+
+    if (!virtual_display::fall_back_to_physical()) {
+      return -1;
+    }
+
+    display_device::configure_display(config::video, launch_session);
+    return video::probe_encoders();
   }
 
   /**
@@ -1442,7 +1461,7 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+      if (probe_encoders_for_session(*launch_session)) {
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");
         tree.put("root.gamesession", 0);
@@ -1546,7 +1565,7 @@ namespace nvhttp {
 
     if (no_active_sessions) {
       // A resumed session may request a different mode, so the virtual display is
-      // reconfigured, or created if the app needs one and it does not exist yet.
+      // created again in that mode, or created if the app needs one and it does not exist yet.
       // A client that joins an active session shares the existing display instead.
       if (prepare_virtual_display(current_appid, *launch_session) == virtual_display::status_e::failed) {
         tree.put("root.resume", 0);
@@ -1567,7 +1586,7 @@ namespace nvhttp {
       // encoder matches the active GPU (which could have changed
       // due to hotplugging, driver crash, primary monitor change,
       // or any number of other factors).
-      if (video::probe_encoders()) {
+      if (probe_encoders_for_session(*launch_session)) {
         tree.put("root.resume", 0);
         tree.put("root.<xmlattr>.status_code", 503);
         tree.put("root.<xmlattr>.status_message", "Failed to initialize video capture/encoding. Is a display connected and turned on?");

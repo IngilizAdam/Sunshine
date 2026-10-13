@@ -343,7 +343,14 @@ the main display are removed when the session is quit, or when Sunshine stops fo
   are captured with ScreenCaptureKit.
 - macOS only offers HiDPI for displays of roughly 1680x1050 pixels or larger, so smaller modes are created as 1x
   displays even when [virtual_display_hidpi](configuration.md#virtual_display_hidpi) is enabled.
-- Creating a display and probing it can take a few seconds, especially when a client resumes at a higher resolution.
+- Creating a display and probing it can take a few seconds, especially when a client resumes at a different resolution.
+  Each client and mode gets its own display identity, so a different resolution creates a new display.
+- While the displays sleep, macOS neither draws nor removes displays, including virtual ones. Sunshine wakes the
+  displays before it creates, captures or removes a virtual display, so a connected monitor or TV turns on when a
+  session starts. Some TVs disconnect in standby; the virtual display still works without them.
+- macOS restores the mirroring it stored for a display. Sunshine turns mirroring off for its virtual display, and logs
+  a warning when it does.
+- If capture fails on the virtual display and a physical display is connected, Sunshine streams the physical display.
 - To rule the feature out, set the `SUNSHINE_DISABLE_VIRTUAL_DISPLAY` environment variable to `1` before starting
   Sunshine. Sunshine then streams physical displays as before.
 
