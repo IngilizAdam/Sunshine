@@ -31,11 +31,11 @@
 
 // standard includes
 #include <algorithm>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -159,8 +159,7 @@ namespace virtual_display {
     constexpr auto POLL_INTERVAL {50ms};  ///< Interval between display state checks.
     constexpr auto SETTLE_DELAY {500ms};  ///< Time for the window server to finish adding, changing or removing a display.
     constexpr auto WAKE_TIMEOUT {5s};  ///< Time allowed for sleeping displays to wake.
-    constexpr auto INTACT_TIMEOUT {5s};  ///< Time allowed for the helper to restore a display that macOS changed.
-    constexpr auto RESTORE_INTERVAL {1s};  ///< Interval at which the helper checks that macOS kept the display's mode and arrangement.
+    constexpr auto MONITOR_INTERVAL {1s};  ///< Interval at which Sunshine checks that macOS kept the display's mode and arrangement.
     constexpr double MAX_DIAGONAL_INCHES {24.0};  ///< macOS keeps very large panels offline, so the reported size is capped.
 
     /**
@@ -490,53 +489,50 @@ namespace virtual_display {
       }
 
       /**
-       * @brief Restore the mode and arrangement when macOS changed them.
+       * @brief Apply the display's mode and arrangement again.
        *
        * macOS rearranges the displays from its stored configuration when another display is
-       * added or removed, such as a TV that leaves and returns from standby. That resets the
-       * virtual display to a default mode and can make another display the main display. A change
-       * is only restored once it is seen twice in a row, so a reconfiguration that is still in
-       * progress is not interrupted.
+       * added or removed, such as a TV that leaves and returns from standby. That replaces the
+       * application-only configuration of this helper, but CoreGraphics in this process keeps
+       * reporting the helper's own configuration, so the change can only be seen from another
+       * process. Everything is therefore submitted again, even when it looks unchanged here.
+       *
+       * @return Display identifier, or `kCGNullDirectDisplay` on failure.
        */
-      void restore() {
-        std::scoped_lock lock {mutex};
+      CGDirectDisplayID reapply() {
         if (!display || !applied) {
-          return;
+          return kCGNullDirectDisplay;
         }
 
         const auto id {display.displayID};
-        if (!is_online(id)) {
-          changed_checks = 0;
-          return;
+        const auto mode {copy_closest_mode(id, applied_mode, applied_hidpi)};
+        CGDisplayConfigRef config {};
+        if (!mode || CGBeginDisplayConfiguration(&config) != kCGErrorSuccess) {
+          if (mode) {
+            CGDisplayModeRelease(mode);
+          }
+          return kCGNullDirectDisplay;
         }
 
-        const bool mirrored {CGDisplayIsInMirrorSet(id) != 0};
-        bool wrong_mode {!has_pixel_size(id, applied_mode.width, applied_mode.height)};
-        if (const auto current {CGDisplayCopyDisplayMode(id)}) {
-          wrong_mode = wrong_mode || is_hidpi_mode(current) != applied_hidpi;
-          CGDisplayModeRelease(current);
-        }
-        const bool not_main {applied_make_main && !CGDisplayIsMain(id)};
-        if (!mirrored && !wrong_mode && !not_main) {
-          changed_checks = 0;
-          return;
+        CGConfigureDisplayWithDisplayMode(config, id, mode, nullptr);
+        CGDisplayModeRelease(mode);
+        CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay);
+        if (applied_make_main) {
+          // This process still sees the arrangement it configured, so it is submitted as it is.
+          for (const auto other : online_displays()) {
+            if (other != id && CGDisplayIsInMirrorSet(other) && CGDisplayMirrorsDisplay(other) != kCGNullDirectDisplay) {
+              continue;
+            }
+            const auto origin {CGDisplayBounds(other).origin};
+            CGConfigureDisplayOrigin(config, other, static_cast<int32_t>(origin.x), static_cast<int32_t>(origin.y));
+          }
         }
 
-        if (++changed_checks < 2) {
-          return;
+        if (CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly) != kCGErrorSuccess) {
+          report("warning"sv, "Unable to restore the virtual display");
+          return kCGNullDirectDisplay;
         }
-        changed_checks = 0;
-
-        report("warning"sv, "macOS changed the virtual display. Restoring its mode and arrangement.");
-        if (mirrored) {
-          static_cast<void>(leave_mirror_set(id));
-        }
-        if (mirrored || wrong_mode) {
-          static_cast<void>(select_mode(applied_mode, applied_hidpi));
-        }
-        if (applied_make_main && !CGDisplayIsMain(id) && !make_main_display(id)) {
-          report("warning"sv, "Unable to make the virtual display the main display");
-        }
+        return id;
       }
 
     private:
@@ -669,7 +665,6 @@ namespace virtual_display {
         // Remember the mode the display ended up with, so restore() never chases a mode that
         // macOS does not offer exactly.
         {
-          std::scoped_lock lock {mutex};
           applied = true;
           applied_mode = mode;
           applied_hidpi = hidpi;
@@ -698,12 +693,10 @@ namespace virtual_display {
 
       report_t report;  ///< Callback for messages that Sunshine should log.
       CGVirtualDisplay *display {nil};  ///< The display; it exists while this object is alive.
-      std::mutex mutex;  ///< Serializes `restore()` with the fields below.
       bool applied {false};  ///< Whether the display was configured and should be kept that way.
       mode_t applied_mode {};  ///< Mode the display was configured with.
       bool applied_hidpi {false};  ///< Whether the configured mode is a 2x HiDPI mode.
       bool applied_make_main {false};  ///< Whether the display was made the main display.
-      int changed_checks {0};  ///< Consecutive checks that found the configuration changed.
     };
 
     /**
@@ -726,9 +719,6 @@ namespace virtual_display {
      * @return True when the whole line was written.
      */
     bool write_line(int fd, const std::string &line) {
-      // The helper writes replies and messages of its restore thread to the same pipe.
-      static std::mutex write_mutex;
-      std::scoped_lock lock {write_mutex};
       const auto data {line + '\n'};
       std::size_t written {};
       while (written < data.size()) {
@@ -775,24 +765,19 @@ namespace virtual_display {
         static_cast<void>(wake_displays());
       }
 
-      [[nodiscard]] bool is_intact() const override {
+      [[nodiscard]] bool ensure_intact() override {
+        std::scoped_lock lock {helper_mutex};
         if (helper_pid <= 0 || waitpid(helper_pid, nullptr, WNOHANG) != 0) {
           return false;
         }
-
-        // The helper restores a display that macOS changed, which takes a few seconds.
-        const auto id {display_id};
-        const auto width {pixel_width};
-        const auto height {pixel_height};
-        const auto main {made_main};
-        return wait_for(INTACT_TIMEOUT, [id, width, height, main]() {
-          return is_online(id) && has_pixel_size(id, width, height) && (!main || CGDisplayIsMain(id));
-        });
+        return is_intact_locked() || restore_locked();
       }
 
       [[nodiscard]] std::optional<std::string> create(const identity_t &identity, const mode_t &mode, const options_t &options) override {
         destroy();
         static_cast<void>(wake_displays());
+
+        std::unique_lock lock {helper_mutex};
         if (!spawn_helper()) {
           return std::nullopt;
         }
@@ -802,14 +787,19 @@ namespace virtual_display {
                 << mode.width << ' ' << mode.height << ' ' << mode.refresh_rate << ' ' << options.hidpi << ' ' << options.make_main << ' '
                 << single_line(identity.name);
         if (!send_command(command.str()) || !wait_until_usable()) {
+          lock.unlock();
           destroy();
           return std::nullopt;
         }
         made_main = options.make_main;
+        start_monitor();
         return std::to_string(display_id);
       }
 
       void destroy() override {
+        stop_monitor();
+
+        std::scoped_lock lock {helper_mutex};
         if (helper_pid <= 0) {
           return;
         }
@@ -833,6 +823,94 @@ namespace virtual_display {
       }
 
     private:
+      /**
+       * @brief Report whether the display still has its mode and arrangement.
+       *
+       * Only Sunshine can see this: CoreGraphics in the helper keeps reporting the helper's own
+       * configuration after macOS replaced it. The helper mutex must be held.
+       *
+       * @return True when the display is online, unmirrored, in its mode and main when it should be.
+       */
+      [[nodiscard]] bool is_intact_locked() const {
+        return is_online(display_id) && !CGDisplayIsInMirrorSet(display_id) && has_pixel_size(display_id, pixel_width, pixel_height) &&
+               (!made_main || CGDisplayIsMain(display_id));
+      }
+
+      /**
+       * @brief Ask the helper to apply the mode and arrangement again and wait until they are back.
+       *
+       * The helper mutex must be held.
+       *
+       * @return True when the display is intact afterwards.
+       */
+      bool restore_locked() {
+        BOOST_LOG(warning) << "macOS changed the virtual display ["sv << display_id << "]. Restoring its mode and arrangement."sv;
+        const auto width {pixel_width};
+        const auto height {pixel_height};
+        if (!send_command("restore")) {
+          return false;
+        }
+        pixel_width = width;
+        pixel_height = height;
+        if (!wait_for(MODE_TIMEOUT, [this]() {
+              return is_intact_locked();
+            })) {
+          BOOST_LOG(warning) << "Unable to restore the virtual display ["sv << display_id << ']';
+          return false;
+        }
+        return true;
+      }
+
+      /**
+       * @brief Start checking the display once per second for changes made by macOS.
+       *
+       * macOS rearranges the displays from its stored configuration when another display is added
+       * or removed, such as a TV that leaves and returns from standby, which resets the virtual
+       * display to a default mode and can make another display the main display. A change must be
+       * seen twice in a row, so a reconfiguration that is still in progress is not interrupted.
+       */
+      void start_monitor() {
+        {
+          std::scoped_lock lock {monitor_mutex};
+          stop_monitoring = false;
+        }
+        monitor = std::thread([this]() {
+          int changed_checks {0};
+          std::unique_lock lock {monitor_mutex};
+          while (!monitor_stopped.wait_for(lock, MONITOR_INTERVAL, [this]() {
+            return stop_monitoring;
+          })) {
+            lock.unlock();
+            {
+              std::scoped_lock helper_lock {helper_mutex};
+              if (helper_pid > 0 && !is_intact_locked()) {
+                if (++changed_checks >= 2) {
+                  changed_checks = 0;
+                  static_cast<void>(restore_locked());
+                }
+              } else {
+                changed_checks = 0;
+              }
+            }
+            lock.lock();
+          }
+        });
+      }
+
+      /**
+       * @brief Stop the thread started by `start_monitor()`.
+       */
+      void stop_monitor() {
+        {
+          std::scoped_lock lock {monitor_mutex};
+          stop_monitoring = true;
+        }
+        monitor_stopped.notify_all();
+        if (monitor.joinable()) {
+          monitor.join();
+        }
+      }
+
       /**
        * @brief Wait until Sunshine sees the helper's display online with a current mode.
        *
@@ -1063,6 +1141,11 @@ namespace virtual_display {
       int pixel_width {};  ///< Framebuffer width the helper reported.
       int pixel_height {};  ///< Framebuffer height the helper reported.
       bool made_main {false};  ///< Whether the display was made the main display.
+      std::mutex helper_mutex;  ///< Serializes use of the helper and the fields above.
+      std::thread monitor;  ///< Thread started by `start_monitor()`.
+      std::mutex monitor_mutex;  ///< Protects `stop_monitoring`.
+      std::condition_variable monitor_stopped;  ///< Signaled when the monitor should stop.
+      bool stop_monitoring {false};  ///< Whether the monitor should stop.
     };
   }  // namespace
 
@@ -1110,22 +1193,6 @@ namespace virtual_display {
       write_line(STDOUT_FILENO, "log " + std::string {level} + ' ' + single_line(message));
     }};
 
-    std::atomic_bool stop_restoring {false};
-    std::thread restorer;
-    const auto start_restoring {[&]() {
-      if (restorer.joinable()) {
-        return;
-      }
-      restorer = std::thread([&]() {
-        while (!stop_restoring) {
-          std::this_thread::sleep_for(RESTORE_INTERVAL);
-          if (!stop_restoring) {
-            owner.restore();
-          }
-        }
-      });
-    }};
-
     std::string line;
     while (std::getline(std::cin, line)) {
       std::istringstream command {line};
@@ -1141,6 +1208,8 @@ namespace virtual_display {
           std::getline(command >> std::ws, identity.name);
           id = owner.create(identity, mode, options);
         }
+      } else if (name == "restore") {
+        id = owner.reapply();
       } else if (name == "quit") {
         break;
       } else {
@@ -1162,12 +1231,6 @@ namespace virtual_display {
         CGDisplayModeRelease(mode);
       }
       write_line(STDOUT_FILENO, "ok " + std::to_string(id) + ' ' + std::to_string(pixel_width) + ' ' + std::to_string(pixel_height));
-      start_restoring();
-    }
-
-    stop_restoring = true;
-    if (restorer.joinable()) {
-      restorer.join();
     }
 
     // Exiting removes the display and reverts the arrangement changes of this process.

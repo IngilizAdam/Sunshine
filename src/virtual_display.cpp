@@ -266,7 +266,7 @@ namespace virtual_display {
 
     if (st.active) {
       if (mode == st.mode && options == st.options) {
-        if (backend->is_intact()) {
+        if (backend->ensure_intact()) {
           BOOST_LOG(info) << "Sharing the existing virtual display ["sv << st.display_name << ']';
           return status_e::active;
         }

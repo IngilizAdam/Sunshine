@@ -350,6 +350,9 @@ the main display are removed when the session is quit, or when Sunshine stops fo
   session starts. Some TVs disconnect in standby; the virtual display still works without them.
 - macOS restores the mirroring it stored for a display. Sunshine turns mirroring off for its virtual display, and logs
   a warning when it does.
+- When a display leaves and returns, such as a TV going through standby or switching inputs, macOS rearranges the
+  displays and resets the virtual display to a default mode. Sunshine checks the virtual display every second and
+  restores its mode and main display, logging "macOS changed the virtual display".
 - If capture fails on the virtual display and a physical display is connected, Sunshine streams the physical display.
 - To rule the feature out, set the `SUNSHINE_DISABLE_VIRTUAL_DISPLAY` environment variable to `1` before starting
   Sunshine. Sunshine then streams physical displays as before.

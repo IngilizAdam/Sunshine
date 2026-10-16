@@ -156,35 +156,22 @@ TEST_F(MacVirtualDisplayTest, TurnsOffMirroringRestoredByMacOS) {
   EXPECT_DOUBLE_EQ(refresh_rate, 60.0);
 }
 
-TEST_F(MacVirtualDisplayTest, RestoresModeAndMainDisplayAfterMacOSChangesThem) {
+TEST_F(MacVirtualDisplayTest, RestoresMainDisplayAfterAnotherDisplayComesAndGoes) {
   const auto identity = virtual_display::derive_identity("mac-virtual-display-test-restore", "Sunshine Test");
   const auto display = backend->create(identity, {2560, 1600, 60}, {.hidpi = false, .make_main = true});
   ASSERT_TRUE(display);
   const auto display_id = static_cast<CGDirectDisplayID>(std::stoul(*display));
   ASSERT_TRUE(CGDisplayIsMain(display_id));
 
-  // Do what macOS does when a TV returns from standby: pick a default mode and move the main display back.
-  CGDisplayModeRef smaller {nullptr};
-  const auto modes = CGDisplayCopyAllDisplayModes(display_id, nullptr);
-  ASSERT_NE(modes, nullptr);
-  for (CFIndex index = 0; index < CFArrayGetCount(modes) && !smaller; ++index) {
-    const auto mode = (CGDisplayModeRef) CFArrayGetValueAtIndex(modes, index);
-    if (CGDisplayModeGetPixelWidth(mode) == 1920 && CGDisplayModeGetPixelHeight(mode) == 1200) {
-      smaller = CGDisplayModeRetain(mode);
-    }
+  // A display that appears and disappears makes macOS rearrange the displays, as a TV in standby does.
+  {
+    const auto other_backend = virtual_display::make_platform_backend();
+    const auto other_identity = virtual_display::derive_identity("mac-virtual-display-test-restore-other", "Sunshine Test");
+    ASSERT_TRUE(other_backend->create(other_identity, {1920, 1080, 60}, {.hidpi = false, .make_main = true}));
+    other_backend->destroy();
   }
-  CFRelease(modes);
-  ASSERT_NE(smaller, nullptr);
 
-  CGDisplayConfigRef config {};
-  ASSERT_EQ(CGBeginDisplayConfiguration(&config), kCGErrorSuccess);
-  CGConfigureDisplayWithDisplayMode(config, display_id, smaller, nullptr);
-  CGConfigureDisplayOrigin(config, main_display, 0, 0);
-  CGConfigureDisplayOrigin(config, display_id, -1920, 0);
-  ASSERT_EQ(CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly), kCGErrorSuccess);
-  CGDisplayModeRelease(smaller);
-
-  EXPECT_TRUE(backend->is_intact());
+  EXPECT_TRUE(backend->ensure_intact());
   int pixel_width {}, pixel_height {}, point_width {};
   double refresh_rate {};
   read_mode(*display, pixel_width, pixel_height, point_width, refresh_rate);
