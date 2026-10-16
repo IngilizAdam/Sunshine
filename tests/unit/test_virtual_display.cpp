@@ -287,6 +287,18 @@ TEST_F(VirtualDisplaySessionTest, SharesDisplayWhenModeIsUnchanged) {
   EXPECT_EQ(log->destroy_calls, 0);
 }
 
+TEST_F(VirtualDisplaySessionTest, RecreatesDisplayThatLostItsModeOrArrangement) {
+  ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
+  const auto first_serial {log->last_identity.serial_number};
+  backend->intact = false;
+
+  EXPECT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
+  EXPECT_EQ(log->destroy_calls, 1);
+  EXPECT_EQ(log->create_calls, 2);
+  EXPECT_EQ(log->last_identity.serial_number, first_serial) << "The same mode keeps its identity";
+  EXPECT_EQ(virtual_display::active_display_name(), "101");
+}
+
 TEST_F(VirtualDisplaySessionTest, RecreatesDisplayWithNewIdentityWhenModeChanges) {
   ASSERT_EQ(virtual_display::prepare_session(request(true)), virtual_display::status_e::active);
   const auto first_serial {log->last_identity.serial_number};

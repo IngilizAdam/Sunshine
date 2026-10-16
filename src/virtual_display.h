@@ -185,6 +185,16 @@ namespace virtual_display {
     virtual void wake() = 0;
 
     /**
+     * @brief Report whether the display still has the mode and arrangement it was created with.
+     *
+     * The system can change a display when other displays are added or removed, for example when
+     * a TV returns from standby. The backend may wait a few seconds for its own repair.
+     *
+     * @return True when the existing display can be shared with a new session.
+     */
+    [[nodiscard]] virtual bool is_intact() const = 0;
+
+    /**
      * @brief Remove the virtual display and restore the display arrangement.
      */
     virtual void destroy() = 0;

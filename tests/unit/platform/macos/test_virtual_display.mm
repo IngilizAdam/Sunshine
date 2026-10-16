@@ -156,6 +156,43 @@ TEST_F(MacVirtualDisplayTest, TurnsOffMirroringRestoredByMacOS) {
   EXPECT_DOUBLE_EQ(refresh_rate, 60.0);
 }
 
+TEST_F(MacVirtualDisplayTest, RestoresModeAndMainDisplayAfterMacOSChangesThem) {
+  const auto identity = virtual_display::derive_identity("mac-virtual-display-test-restore", "Sunshine Test");
+  const auto display = backend->create(identity, {2560, 1600, 60}, {.hidpi = false, .make_main = true});
+  ASSERT_TRUE(display);
+  const auto display_id = static_cast<CGDirectDisplayID>(std::stoul(*display));
+  ASSERT_TRUE(CGDisplayIsMain(display_id));
+
+  // Do what macOS does when a TV returns from standby: pick a default mode and move the main display back.
+  CGDisplayModeRef smaller {nullptr};
+  const auto modes = CGDisplayCopyAllDisplayModes(display_id, nullptr);
+  ASSERT_NE(modes, nullptr);
+  for (CFIndex index = 0; index < CFArrayGetCount(modes) && !smaller; ++index) {
+    const auto mode = (CGDisplayModeRef) CFArrayGetValueAtIndex(modes, index);
+    if (CGDisplayModeGetPixelWidth(mode) == 1920 && CGDisplayModeGetPixelHeight(mode) == 1200) {
+      smaller = CGDisplayModeRetain(mode);
+    }
+  }
+  CFRelease(modes);
+  ASSERT_NE(smaller, nullptr);
+
+  CGDisplayConfigRef config {};
+  ASSERT_EQ(CGBeginDisplayConfiguration(&config), kCGErrorSuccess);
+  CGConfigureDisplayWithDisplayMode(config, display_id, smaller, nullptr);
+  CGConfigureDisplayOrigin(config, main_display, 0, 0);
+  CGConfigureDisplayOrigin(config, display_id, -1920, 0);
+  ASSERT_EQ(CGCompleteDisplayConfiguration(config, kCGConfigureForAppOnly), kCGErrorSuccess);
+  CGDisplayModeRelease(smaller);
+
+  EXPECT_TRUE(backend->is_intact());
+  int pixel_width {}, pixel_height {}, point_width {};
+  double refresh_rate {};
+  read_mode(*display, pixel_width, pixel_height, point_width, refresh_rate);
+  EXPECT_EQ(pixel_width, 2560);
+  EXPECT_EQ(pixel_height, 1600);
+  EXPECT_TRUE(CGDisplayIsMain(display_id));
+}
+
 TEST_F(MacVirtualDisplayTest, WakingAwakeDisplaysSucceeds) {
   EXPECT_TRUE(virtual_display::wake_displays());
 }

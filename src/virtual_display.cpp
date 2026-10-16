@@ -266,13 +266,17 @@ namespace virtual_display {
 
     if (st.active) {
       if (mode == st.mode && options == st.options) {
-        BOOST_LOG(info) << "Sharing the existing virtual display ["sv << st.display_name << ']';
-        return status_e::active;
-      }
+        if (backend->is_intact()) {
+          BOOST_LOG(info) << "Sharing the existing virtual display ["sv << st.display_name << ']';
+          return status_e::active;
+        }
 
-      // Each mode has its own identity, so a different mode needs a new display.
-      BOOST_LOG(info) << "Replacing virtual display ["sv << st.display_name << "] for mode "sv
-                      << mode.width << 'x' << mode.height << '@' << mode.refresh_rate << (options.hidpi ? " (HiDPI)"sv : ""sv);
+        BOOST_LOG(warning) << "The virtual display ["sv << st.display_name << "] lost its mode or arrangement. Creating it again."sv;
+      } else {
+        // Each mode has its own identity, so a different mode needs a new display.
+        BOOST_LOG(info) << "Replacing virtual display ["sv << st.display_name << "] for mode "sv
+                        << mode.width << 'x' << mode.height << '@' << mode.refresh_rate << (options.hidpi ? " (HiDPI)"sv : ""sv);
+      }
       backend->destroy();
       st.active = false;
       st.display_name.clear();

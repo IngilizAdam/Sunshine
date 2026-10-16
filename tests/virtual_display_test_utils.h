@@ -63,6 +63,10 @@ namespace test_utils::virtual_display {
       ++log->wake_calls;
     }
 
+    [[nodiscard]] bool is_intact() const override {
+      return intact;
+    }
+
     void destroy() override {
       ++log->destroy_calls;
     }
@@ -70,6 +74,7 @@ namespace test_utils::virtual_display {
     bool available {true};  ///< Value returned by is_available().
     bool physical_display {true};  ///< Value returned by has_physical_display().
     bool create_succeeds {true};  ///< Whether create() succeeds.
+    bool intact {true};  ///< Value returned by is_intact().
 
   private:
     std::shared_ptr<backend_log_t> log;  ///< Shared call log.
